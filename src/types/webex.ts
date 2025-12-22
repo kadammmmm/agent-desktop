@@ -90,6 +90,8 @@ export interface TeamAgent {
   name: string;
   state: AgentState;
   teamName: string;
+  skills?: string[];
+  isFavorite?: boolean;
 }
 
 export interface CallLogEntry {
@@ -108,9 +110,25 @@ export interface CustomerProfile {
   email?: string;
   phone?: string;
   company?: string;
+  address?: string;
   notes?: string;
+  isVerified?: boolean;
+  tags?: CustomerTag[];
   interactionHistory: CallLogEntry[];
   cadVariables: Record<string, string>;
+}
+
+export interface CustomerTag {
+  label: string;
+  color: string;
+}
+
+export interface CustomerNote {
+  id: string;
+  text: string;
+  timestamp: number;
+  author: string;
+  isPinned?: boolean;
 }
 
 export interface AgentMetrics {
@@ -119,6 +137,45 @@ export interface AgentMetrics {
   avgWrapTime: number;
   occupancy: number;
   adherence: number;
+  fcr?: number;
+  csat?: number;
+}
+
+export interface ExtendedMetrics extends AgentMetrics {
+  handleTimeHistory: number[];
+  callsByHour: number[];
+  stateBreakdown: {
+    available: number;
+    engaged: number;
+    idle: number;
+    wrapup: number;
+  };
+  callsYesterday?: number;
+  callsTrend?: 'up' | 'down' | 'same';
+}
+
+export interface EntryPoint {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+export interface RecentOutboundCall {
+  number: string;
+  timestamp: number;
+  duration: number;
+  entryPointId: string;
+  entryPointName: string;
+}
+
+export interface ConsultState {
+  isConsulting: boolean;
+  consultTarget?: {
+    type: 'agent' | 'queue' | 'dn';
+    id: string;
+    name: string;
+  };
+  consultStartTime?: number;
 }
 
 export type NavigationSection = 
