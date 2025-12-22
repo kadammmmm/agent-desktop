@@ -6,6 +6,7 @@ import { ContextualPanelTabs } from './ContextualPanelTabs';
 import { GlobalSearchBar } from './GlobalSearchBar';
 import { ChannelQuickAccess } from './ChannelQuickAccess';
 import { QueueToggle } from './QueueToggle';
+import { DemoControlPanel } from './DemoControlPanel';
 import { useWebex } from '@/contexts/WebexContext';
 import type { NavigationSection } from '@/types/webex';
 import { ChevronRight, ChevronLeft, PanelRightOpen, PanelRightClose, User } from 'lucide-react';
@@ -102,6 +103,9 @@ export function CommandCenterLayout() {
           )}
         </div>
       </div>
+      
+      {/* Demo Control Panel - floating */}
+      <DemoControlPanel />
     </div>
   );
 }
