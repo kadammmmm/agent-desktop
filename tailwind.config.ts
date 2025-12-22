@@ -19,6 +19,14 @@ export default {
         ring: "hsl(var(--ring))",
         background: "hsl(var(--background))",
         foreground: "hsl(var(--foreground))",
+        // b+s Brand Colors
+        bs: {
+          navy: "hsl(var(--bs-navy))",
+          purple: "hsl(var(--bs-purple))",
+          coral: "hsl(var(--bs-coral))",
+          "coral-light": "hsl(var(--bs-coral-light))",
+          blue: "hsl(var(--bs-blue))",
+        },
         primary: {
           DEFAULT: "hsl(var(--primary))",
           foreground: "hsl(var(--primary-foreground))",
@@ -88,6 +96,11 @@ export default {
           email: "hsl(var(--channel-email))",
           social: "hsl(var(--channel-social))",
         },
+      },
+      backgroundImage: {
+        'bs-gradient': 'linear-gradient(180deg, hsl(244 40% 18%) 0%, hsl(270 45% 22%) 100%)',
+        'bs-gradient-horizontal': 'linear-gradient(90deg, hsl(244 40% 18%) 0%, hsl(270 45% 22%) 100%)',
+        'bs-gradient-accent': 'linear-gradient(135deg, hsl(210 80% 55%) 0%, hsl(8 78% 60%) 100%)',
       },
       borderRadius: {
         lg: "var(--radius)",
