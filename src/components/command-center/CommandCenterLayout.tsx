@@ -7,9 +7,13 @@ import { GlobalSearchBar } from './GlobalSearchBar';
 import { ChannelQuickAccess } from './ChannelQuickAccess';
 import { QueueToggle } from './QueueToggle';
 import { DemoControlPanel } from './DemoControlPanel';
+import { Customer360Enhanced } from './enhanced-panels/Customer360Enhanced';
+import { TransferConsultPanel } from './panels/TransferConsultPanel';
+import { AgentMetricsDashboard } from './panels/AgentMetricsDashboard';
+import { SettingsPanel } from './panels/SettingsPanel';
 import { useWebex } from '@/contexts/WebexContext';
 import type { NavigationSection } from '@/types/webex';
-import { ChevronRight, ChevronLeft, PanelRightOpen, PanelRightClose, User } from 'lucide-react';
+import { ChevronRight, ChevronLeft, PanelRightOpen, PanelRightClose } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { cn } from '@/lib/utils';
@@ -19,6 +23,74 @@ export function CommandCenterLayout() {
   const [activeSection, setActiveSection] = useState<NavigationSection>('interactions');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showContextPanel, setShowContextPanel] = useState(true);
+
+  // Render main content based on active section
+  const renderMainContent = () => {
+    switch (activeSection) {
+      case 'interactions':
+        return (
+          <div className="flex-1 flex overflow-hidden">
+            {/* Conversations Panel (Left Column) */}
+            <aside className={cn(
+              "w-72 border-r border-border shrink-0 transition-all duration-300",
+              "hidden md:block"
+            )}>
+              <ConversationsPanel />
+            </aside>
+
+            {/* Interaction Area (Center Column) */}
+            <main className="flex-1 overflow-hidden bg-background">
+              <InteractionArea />
+            </main>
+
+            {/* Contextual Panel (Right Column) */}
+            {showContextPanel && (
+              <aside className="hidden lg:flex w-80 xl:w-96 border-l border-border bg-card/30 flex-col shrink-0">
+                <ContextualPanelTabs onClose={() => setShowContextPanel(false)} />
+              </aside>
+            )}
+          </div>
+        );
+
+      case 'customer':
+        return (
+          <main className="flex-1 overflow-auto bg-background p-4">
+            <Customer360Enhanced />
+          </main>
+        );
+
+      case 'transfer':
+        return (
+          <main className="flex-1 overflow-auto bg-background p-4">
+            <TransferConsultPanel />
+          </main>
+        );
+
+      case 'analytics':
+        return (
+          <main className="flex-1 overflow-hidden bg-background">
+            <AgentMetricsDashboard />
+          </main>
+        );
+
+      case 'settings':
+        return (
+          <main className="flex-1 overflow-auto bg-background p-4">
+            <SettingsPanel />
+          </main>
+        );
+
+      default:
+        return (
+          <main className="flex-1 overflow-hidden bg-background">
+            <InteractionArea />
+          </main>
+        );
+    }
+  };
+
+  // Only show context panel toggle for interactions view
+  const showContextToggle = activeSection === 'interactions';
 
   return (
     <div className="flex h-screen w-full bg-background overflow-hidden">
@@ -59,15 +131,17 @@ export function CommandCenterLayout() {
             {/* Queue Toggle */}
             <QueueToggle />
 
-            {/* Context Panel Toggle */}
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setShowContextPanel(!showContextPanel)}
-              className="hidden lg:flex"
-            >
-              {showContextPanel ? <PanelRightClose className="h-5 w-5" /> : <PanelRightOpen className="h-5 w-5" />}
-            </Button>
+            {/* Context Panel Toggle - only for interactions view */}
+            {showContextToggle && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setShowContextPanel(!showContextPanel)}
+                className="hidden lg:flex"
+              >
+                {showContextPanel ? <PanelRightClose className="h-5 w-5" /> : <PanelRightOpen className="h-5 w-5" />}
+              </Button>
+            )}
 
             {/* Agent Avatar */}
             {agentProfile && (
@@ -80,28 +154,8 @@ export function CommandCenterLayout() {
           </div>
         </header>
 
-        {/* 3-Column Content Area */}
-        <div className="flex-1 flex overflow-hidden">
-          {/* Conversations Panel (Left Column) */}
-          <aside className={cn(
-            "w-72 border-r border-border shrink-0 transition-all duration-300",
-            "hidden md:block"
-          )}>
-            <ConversationsPanel />
-          </aside>
-
-          {/* Interaction Area (Center Column) */}
-          <main className="flex-1 overflow-hidden bg-background">
-            <InteractionArea />
-          </main>
-
-          {/* Contextual Panel (Right Column) */}
-          {showContextPanel && (
-            <aside className="hidden lg:flex w-80 xl:w-96 border-l border-border bg-card/30 flex-col shrink-0">
-              <ContextualPanelTabs onClose={() => setShowContextPanel(false)} />
-            </aside>
-          )}
-        </div>
+        {/* Dynamic Content Area */}
+        {renderMainContent()}
       </div>
       
       {/* Demo Control Panel - floating */}
