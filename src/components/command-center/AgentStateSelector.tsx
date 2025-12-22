@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { useWebex } from '@/contexts/WebexContext';
 import { 
@@ -12,7 +12,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Button } from '@/components/ui/button';
-import { ChevronDown, Clock } from 'lucide-react';
+import { ChevronDown, Clock, Loader2 } from 'lucide-react';
 import type { AgentState } from '@/types/webex';
 
 interface AgentStateSelectorProps {
@@ -29,39 +29,39 @@ const stateConfig: Record<AgentState, { label: string; className: string }> = {
 };
 
 export function AgentStateSelector({ collapsed }: AgentStateSelectorProps) {
-  const { agentState, agentProfile, idleCodes, setAgentState, login, logout } = useWebex();
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const { agentState, agentProfile, idleCodes, setAgentState, isLoading } = useWebex();
+  const [displayTime, setDisplayTime] = useState('0:00');
 
-  const handleLogin = async () => {
-    setIsLoggingIn(true);
-    try {
-      await login('team-001', '+1-800-555-0100');
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
+  // Update timer display every second
+  useEffect(() => {
+    if (!agentState?.lastStateChangeTime) return;
+    
+    const updateTimer = () => {
+      const seconds = Math.floor((Date.now() - agentState.lastStateChangeTime) / 1000);
+      const mins = Math.floor(seconds / 60);
+      const secs = seconds % 60;
+      setDisplayTime(`${mins}:${secs.toString().padStart(2, '0')}`);
+    };
+    
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+    return () => clearInterval(interval);
+  }, [agentState?.lastStateChangeTime]);
 
   const handleStateChange = async (state: AgentState, idleCodeId?: string) => {
     await setAgentState(state, idleCodeId);
   };
 
-  const formatDuration = (startTime: number) => {
-    const seconds = Math.floor((Date.now() - startTime) / 1000);
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  if (!agentProfile) {
+  // Show loading state while SDK initializes
+  if (isLoading || !agentProfile) {
     return (
-      <Button
-        onClick={handleLogin}
-        disabled={isLoggingIn}
-        size={collapsed ? "icon" : "default"}
-        className="w-full bg-sidebar-primary text-sidebar-primary-foreground hover:bg-sidebar-primary/90"
-      >
-        {collapsed ? '→' : (isLoggingIn ? 'Logging in...' : 'Login')}
-      </Button>
+      <div className={cn(
+        "flex items-center gap-2 px-3 py-2 text-sidebar-muted",
+        collapsed && "justify-center px-2"
+      )}>
+        <Loader2 className="w-4 h-4 animate-spin" />
+        {!collapsed && <span className="text-sm">Connecting...</span>}
+      </div>
     );
   }
 
@@ -90,7 +90,7 @@ export function AgentStateSelector({ collapsed }: AgentStateSelectorProps) {
               {agentState && (
                 <div className="flex items-center gap-1 text-xs text-sidebar-muted">
                   <Clock className="w-3 h-3" />
-                  {formatDuration(agentState.lastStateChangeTime)}
+                  {displayTime}
                 </div>
               )}
               <ChevronDown className="w-4 h-4 text-sidebar-muted" />
@@ -129,12 +129,6 @@ export function AgentStateSelector({ collapsed }: AgentStateSelectorProps) {
         >
           <div className="state-indicator state-offline mr-2" />
           Offline
-        </DropdownMenuItem>
-
-        <DropdownMenuSeparator />
-        
-        <DropdownMenuItem onClick={logout} className="text-destructive">
-          Logout
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

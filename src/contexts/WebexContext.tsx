@@ -17,6 +17,7 @@ interface WebexContextType {
   isInitialized: boolean;
   isConnected: boolean;
   connectionError: string | null;
+  isLoading: boolean;
   
   // Agent info
   agentProfile: AgentProfile | null;
@@ -38,8 +39,6 @@ interface WebexContextType {
   
   // Actions
   initialize: () => Promise<void>;
-  login: (teamId: string, dialNumber: string) => Promise<void>;
-  logout: () => Promise<void>;
   setAgentState: (state: AgentState, idleCodeId?: string) => Promise<void>;
   acceptTask: (taskId: string) => Promise<void>;
   declineTask: (taskId: string) => Promise<void>;
@@ -92,9 +91,13 @@ const mockTeamAgents: TeamAgent[] = [
   { agentId: 'a4', name: 'Alice Brown', state: 'Available', teamName: 'Support Team' },
 ];
 
+// Demo mode detection - set to true when not running inside Webex CC Desktop
+const DEMO_MODE = true;
+
 export function WebexProvider({ children }: { children: React.ReactNode }) {
   const [isInitialized, setIsInitialized] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   
   const [agentProfile, setAgentProfile] = useState<AgentProfile | null>(null);
@@ -113,61 +116,58 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
 
   const ronaTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Simulate SDK initialization
+  // Initialize SDK and auto-fetch agent session
   const initialize = useCallback(async () => {
+    setIsLoading(true);
     try {
-      // In real implementation, this would call Desktop.config.init()
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      if (DEMO_MODE) {
+        // Demo mode: simulate SDK initialization and provide mock agent data
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Auto-populate agent profile (agent is already logged in via Webex CC)
+        setAgentProfile({
+          agentId: 'agent-001',
+          name: 'Demo Agent',
+          email: 'agent@company.com',
+          teamId: 'team-001',
+          teamName: 'Demo Team',
+          siteId: 'site-001',
+          siteName: 'Main Site',
+          extension: '1001',
+          dialNumber: '+1-800-555-0100',
+        });
+        
+        setAgentStateInfo({
+          state: 'Offline',
+          lastStateChangeTime: Date.now(),
+        });
+        
+        setAgentMetrics({
+          callsHandled: 24,
+          avgHandleTime: 320,
+          avgWrapTime: 45,
+          occupancy: 78,
+          adherence: 95,
+        });
+        
+        console.log('[WebexCC] Demo mode - Agent session loaded');
+      } else {
+        // Real SDK integration
+        // const Desktop = await import('@wxcc-desktop/sdk');
+        // await Desktop.default.config.init();
+        // const agentInfo = await Desktop.default.agentStateInfo.getAgentInfo();
+        // Subscribe to state change events, etc.
+      }
+      
       setIsInitialized(true);
       setIsConnected(true);
       console.log('[WebexCC] SDK Initialized');
     } catch (error) {
       setConnectionError('Failed to initialize SDK');
       console.error('[WebexCC] Init error:', error);
+    } finally {
+      setIsLoading(false);
     }
-  }, []);
-
-  // Login
-  const login = useCallback(async (teamId: string, dialNumber: string) => {
-    try {
-      await new Promise(resolve => setTimeout(resolve, 500));
-      setAgentProfile({
-        agentId: 'agent-001',
-        name: 'Demo Agent',
-        email: 'agent@company.com',
-        teamId,
-        teamName: 'Demo Team',
-        siteId: 'site-001',
-        siteName: 'Main Site',
-        extension: '1001',
-        dialNumber,
-      });
-      setAgentStateInfo({
-        state: 'Offline',
-        lastStateChangeTime: Date.now(),
-      });
-      setAgentMetrics({
-        callsHandled: 24,
-        avgHandleTime: 320,
-        avgWrapTime: 45,
-        occupancy: 78,
-        adherence: 95,
-      });
-      console.log('[WebexCC] Agent logged in');
-    } catch (error) {
-      console.error('[WebexCC] Login error:', error);
-      throw error;
-    }
-  }, []);
-
-  // Logout
-  const logout = useCallback(async () => {
-    setAgentProfile(null);
-    setAgentStateInfo(null);
-    setActiveTasks([]);
-    setIncomingTask(null);
-    setAgentMetrics(null);
-    console.log('[WebexCC] Agent logged out');
   }, []);
 
   // Set agent state
@@ -425,6 +425,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   const value: WebexContextType = {
     isInitialized,
     isConnected,
+    isLoading,
     connectionError,
     agentProfile,
     agentState,
@@ -437,8 +438,6 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     teamAgents,
     agentMetrics,
     initialize,
-    login,
-    logout,
     setAgentState,
     acceptTask,
     declineTask,
