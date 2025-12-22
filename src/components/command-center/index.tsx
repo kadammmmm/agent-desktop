@@ -1,9 +1,8 @@
-import { WebexProvider } from '@/contexts/WebexContext';
+import { WebexProvider, useWebex } from '@/contexts/WebexContext';
 import { CommandCenterLayout } from './CommandCenterLayout';
 import { useEffect } from 'react';
-import { useWebex } from '@/contexts/WebexContext';
 
-function CommandCenterInner() {
+function CommandCenterContent() {
   const { initialize, isInitialized } = useWebex();
 
   useEffect(() => {
@@ -18,7 +17,7 @@ function CommandCenterInner() {
 export function CommandCenter() {
   return (
     <WebexProvider>
-      <CommandCenterInner />
+      <CommandCenterContent />
     </WebexProvider>
   );
 }
