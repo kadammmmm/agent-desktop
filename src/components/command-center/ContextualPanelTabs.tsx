@@ -21,7 +21,7 @@ function CustomerInfoTab() {
 }
 
 function CustomerJourneyTab() {
-  const { activeTasks, selectedTaskId } = useWebex();
+  const { activeTasks, selectedTaskId, interactionHistory } = useWebex();
   const task = activeTasks.find(t => t.taskId === selectedTaskId);
 
   const journeyItems = [
@@ -30,6 +30,21 @@ function CustomerJourneyTab() {
     { stage: 'Support Request', status: 'In Progress', icon: Clock, date: 'Dec 22, 2024' },
     { stage: 'Renewal', status: 'Upcoming', icon: Calendar, date: 'Jan 15, 2025' },
   ];
+
+  const getInteractionIcon = (type: string) => {
+    switch (type) {
+      case 'voice': return Phone;
+      case 'chat': return MessageSquare;
+      case 'email': return Mail;
+      default: return Phone;
+    }
+  };
+
+  const formatDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
 
   if (!task) {
     return (
@@ -43,6 +58,7 @@ function CustomerJourneyTab() {
   return (
     <ScrollArea className="h-full">
       <div className="p-4 space-y-6">
+        {/* Customer Lifecycle */}
         <div>
           <h4 className="text-sm font-semibold mb-3">Customer Lifecycle</h4>
           <div className="space-y-3">
@@ -78,6 +94,62 @@ function CustomerJourneyTab() {
                 </div>
               );
             })}
+          </div>
+        </div>
+
+        {/* Recent Interactions Timeline */}
+        <div>
+          <h4 className="text-sm font-semibold mb-3">Recent Interactions</h4>
+          <div className="space-y-2">
+            {interactionHistory.length > 0 ? (
+              interactionHistory.map((interaction) => {
+                const Icon = getInteractionIcon(interaction.mediaType);
+                const date = new Date(interaction.timestamp);
+                const formattedDate = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                const summary = `${interaction.direction === 'inbound' ? 'Inbound' : 'Outbound'} ${interaction.mediaType}`;
+                
+                return (
+                  <div key={interaction.taskId} className="p-3 rounded-lg bg-muted/50 flex items-start gap-3">
+                    <div className={cn(
+                      "w-8 h-8 rounded-full flex items-center justify-center shrink-0",
+                      interaction.mediaType === 'voice' && "bg-blue-500/10",
+                      interaction.mediaType === 'chat' && "bg-green-500/10",
+                      interaction.mediaType === 'email' && "bg-orange-500/10"
+                    )}>
+                      <Icon className={cn(
+                        "w-4 h-4",
+                        interaction.mediaType === 'voice' && "text-blue-500",
+                        interaction.mediaType === 'chat' && "text-green-500",
+                        interaction.mediaType === 'email' && "text-orange-500"
+                      )} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{summary}</p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-xs text-muted-foreground capitalize">{interaction.mediaType}</span>
+                        <span className="text-xs text-muted-foreground">•</span>
+                        <span className="text-xs text-muted-foreground">{formattedDate}</span>
+                        {interaction.duration > 0 && (
+                          <>
+                            <span className="text-xs text-muted-foreground">•</span>
+                            <span className="text-xs text-muted-foreground">{formatDuration(interaction.duration)}</span>
+                          </>
+                        )}
+                      </div>
+                      {interaction.wrapUpCode && (
+                        <span className="inline-block mt-2 text-xs px-2 py-0.5 rounded bg-primary/10 text-primary">
+                          {interaction.wrapUpCode}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="text-sm text-muted-foreground text-center py-4">
+                No recent interactions
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -168,6 +240,10 @@ export function ContextualPanelTabs({ onClose }: ContextualPanelTabsProps) {
               <User className="w-4 h-4 mr-1" />
               Customer
             </TabsTrigger>
+            <TabsTrigger value="journey" className="data-[state=active]:bg-muted text-xs">
+              <MapPin className="w-4 h-4 mr-1" />
+              Journey
+            </TabsTrigger>
             <TabsTrigger value="transfer" className="data-[state=active]:bg-muted text-xs">
               <ArrowRightLeft className="w-4 h-4 mr-1" />
               Transfer
@@ -188,6 +264,9 @@ export function ContextualPanelTabs({ onClose }: ContextualPanelTabsProps) {
 
         <TabsContent value="customer" className="flex-1 mt-0 overflow-hidden">
           <CustomerInfoTab />
+        </TabsContent>
+        <TabsContent value="journey" className="flex-1 mt-0 overflow-hidden">
+          <CustomerJourneyTab />
         </TabsContent>
         <TabsContent value="transfer" className="flex-1 mt-0 overflow-hidden">
           <TransferConsultPanel />
