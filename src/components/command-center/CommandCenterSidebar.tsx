@@ -15,6 +15,7 @@ import { AgentStateSelector } from './AgentStateSelector';
 import type { NavigationSection } from '@/types/webex';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import bsLogo from '@/assets/bs-logo.png';
 
 interface CommandCenterSidebarProps {
   activeSection: NavigationSection;
@@ -42,28 +43,42 @@ export function CommandCenterSidebar({
   return (
     <aside 
       className={cn(
-        "h-full bg-sidebar flex flex-col border-r border-sidebar-border transition-all duration-300",
+        "h-full bg-bs-gradient flex flex-col border-r border-sidebar-border transition-all duration-300",
         collapsed ? "w-16" : "w-64"
       )}
     >
       {/* Logo / Brand */}
-      <div className="h-14 flex items-center justify-between px-4 border-b border-sidebar-border shrink-0">
+      <div className="flex flex-col border-b border-sidebar-border shrink-0">
+        {/* b+s Logo */}
+        <div className={cn(
+          "flex items-center justify-between px-3 py-3",
+          collapsed && "justify-center"
+        )}>
+          {!collapsed && (
+            <img 
+              src={bsLogo} 
+              alt="b+s" 
+              className="h-8 w-auto object-contain"
+            />
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onToggleCollapse}
+            className="text-sidebar-muted hover:text-sidebar-foreground hover:bg-sidebar-accent shrink-0"
+          >
+            {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+          </Button>
+        </div>
+        
+        {/* Product Title */}
         {!collapsed && (
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-sidebar-primary flex items-center justify-center">
-              <Phone className="w-4 h-4 text-sidebar-primary-foreground" />
-            </div>
-            <span className="font-semibold text-sidebar-foreground">WebexCC</span>
+          <div className="px-4 pb-3">
+            <h1 className="text-sm font-semibold text-sidebar-foreground leading-tight">
+              Webex CC Agent Desktop
+            </h1>
           </div>
         )}
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={onToggleCollapse}
-          className="text-sidebar-muted hover:text-sidebar-foreground hover:bg-sidebar-accent"
-        >
-          {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
-        </Button>
       </div>
 
       {/* Connection Status */}

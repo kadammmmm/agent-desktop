@@ -104,8 +104,11 @@ export function CommandCenterLayout() {
 
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {/* Enhanced Header */}
-        <header className="h-14 border-b border-border bg-card/50 backdrop-blur-sm flex items-center justify-between px-4 shrink-0">
+        {/* Enhanced Header with b+s gradient accent */}
+        <header className="h-14 border-b border-border bg-card/50 backdrop-blur-sm flex items-center justify-between px-4 shrink-0 relative">
+          {/* Gradient accent line at top */}
+          <div className="absolute top-0 left-0 right-0 h-0.5 bg-bs-gradient-accent" />
+          
           {/* Left Section */}
           <div className="flex items-center gap-4">
             <Button
@@ -116,6 +119,11 @@ export function CommandCenterLayout() {
             >
               {sidebarCollapsed ? <ChevronRight className="h-5 w-5" /> : <ChevronLeft className="h-5 w-5" />}
             </Button>
+            
+            {/* Brand Title */}
+            <h2 className="hidden sm:block text-sm font-medium text-foreground/80">
+              Webex CC Agent Desktop
+            </h2>
             
             {/* Global Search */}
             <GlobalSearchBar />
