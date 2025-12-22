@@ -16,8 +16,10 @@ import type {
   CustomerProfile,
   CustomerNote,
   CallLogEntry,
-  ExtendedMetrics
+  ExtendedMetrics,
+  ChannelType
 } from '@/types/webex';
+import { getScenarioById } from '@/lib/demoScenarios';
 
 interface WebexContextType {
   // Connection state
@@ -57,6 +59,10 @@ interface WebexContextType {
   customerNotes: CustomerNote[];
   interactionHistory: CallLogEntry[];
   
+  // Demo settings reference
+  demoAutoIncomingEnabled: boolean;
+  setDemoAutoIncomingEnabled: (enabled: boolean) => void;
+  
   // Actions
   initialize: () => Promise<void>;
   setAgentState: (state: AgentState, idleCodeId?: string) => Promise<void>;
@@ -85,6 +91,12 @@ interface WebexContextType {
   updateCADVariable: (taskId: string, key: string, value: string) => Promise<void>;
   addCustomerNote: (note: string) => Promise<void>;
   toggleFavoriteAgent: (agentId: string) => void;
+  
+  // Demo-specific actions
+  triggerIncomingTask: (mediaType: ChannelType, queueId?: string) => void;
+  applyCustomerScenario: (scenarioId: string) => void;
+  triggerRONA: () => void;
+  clearAllTasks: () => void;
 }
 
 const WebexContext = createContext<WebexContextType | null>(null);
@@ -193,7 +205,10 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   
   const [customerProfile, setCustomerProfile] = useState<CustomerProfile | null>(null);
   const [customerNotes, setCustomerNotes] = useState<CustomerNote[]>(mockCustomerNotes);
-  const [interactionHistory] = useState<CallLogEntry[]>(mockInteractionHistory);
+  const [interactionHistory, setInteractionHistory] = useState<CallLogEntry[]>(mockInteractionHistory);
+  
+  // Demo control state
+  const [demoAutoIncomingEnabled, setDemoAutoIncomingEnabled] = useState(true);
 
   const ronaTimerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -619,8 +634,82 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     ));
   }, []);
 
-  // Simulate incoming call for demo
+  // Demo: Trigger incoming task manually
+  const triggerIncomingTask = useCallback((mediaType: ChannelType, queueId?: string) => {
+    const taskId = `task-${Date.now()}`;
+    const queue = queueId 
+      ? mockQueues.find(q => q.id === queueId) 
+      : mockQueues[Math.floor(Math.random() * mockQueues.length)];
+    
+    setIncomingTask({
+      taskId,
+      mediaType,
+      ani: '+1-555-' + Math.floor(Math.random() * 9000 + 1000),
+      queueName: queue?.name || 'Unknown Queue',
+      ronaTimeout: 15,
+      startTime: Date.now(),
+    });
+    
+    // RONA timer
+    ronaTimerRef.current = setTimeout(() => {
+      setIncomingTask(null);
+      setAgentStateInfo(prev => prev ? { ...prev, state: 'RONA' } : null);
+    }, 15000);
+    
+    console.log('[WebexCC Demo] Triggered incoming task:', mediaType);
+  }, []);
+
+  // Demo: Apply customer scenario
+  const applyCustomerScenario = useCallback((scenarioId: string) => {
+    const scenario = getScenarioById(scenarioId);
+    if (!scenario) {
+      console.warn('[WebexCC Demo] Scenario not found:', scenarioId);
+      return;
+    }
+    
+    // Update customer profile with scenario data
+    setCustomerProfile(prev => ({
+      id: scenario.customerProfile.id || prev?.id || 'cust-demo',
+      name: scenario.customerProfile.name || 'Demo Customer',
+      email: scenario.customerProfile.email,
+      phone: scenario.customerProfile.phone,
+      company: scenario.customerProfile.company,
+      address: scenario.customerProfile.address,
+      isVerified: scenario.customerProfile.isVerified,
+      tags: scenario.customerProfile.tags,
+      interactionHistory: scenario.interactionHistory,
+      cadVariables: scenario.cadVariables,
+    }));
+    
+    // Update interaction history
+    setInteractionHistory(scenario.interactionHistory);
+    
+    console.log('[WebexCC Demo] Applied scenario:', scenarioId);
+  }, []);
+
+  // Demo: Trigger RONA
+  const triggerRONA = useCallback(() => {
+    setIncomingTask(null);
+    setAgentStateInfo(prev => prev ? { ...prev, state: 'RONA' } : null);
+    console.log('[WebexCC Demo] Triggered RONA');
+  }, []);
+
+  // Demo: Clear all tasks
+  const clearAllTasks = useCallback(() => {
+    setActiveTasks([]);
+    setIncomingTask(null);
+    setSelectedTaskId(null);
+    setCustomerProfile(null);
+    setConsultState({ isConsulting: false });
+    if (ronaTimerRef.current) {
+      clearTimeout(ronaTimerRef.current);
+    }
+    console.log('[WebexCC Demo] Cleared all tasks');
+  }, []);
+
+  // Simulate incoming call for demo (respects demoAutoIncomingEnabled)
   useEffect(() => {
+    if (!demoAutoIncomingEnabled) return;
     if (!agentState || agentState.state !== 'Available') return;
     
     const timer = setTimeout(() => {
@@ -645,7 +734,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     }, 8000);
     
     return () => clearTimeout(timer);
-  }, [agentState?.state]);
+  }, [agentState?.state, demoAutoIncomingEnabled]);
 
   const value: WebexContextType = {
     isInitialized,
@@ -669,6 +758,8 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     customerProfile,
     customerNotes,
     interactionHistory,
+    demoAutoIncomingEnabled,
+    setDemoAutoIncomingEnabled,
     initialize,
     setAgentState,
     acceptTask,
@@ -696,6 +787,10 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     updateCADVariable,
     addCustomerNote,
     toggleFavoriteAgent,
+    triggerIncomingTask,
+    applyCustomerScenario,
+    triggerRONA,
+    clearAllTasks,
   };
 
   return (
