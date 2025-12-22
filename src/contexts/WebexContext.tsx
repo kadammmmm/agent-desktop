@@ -20,6 +20,7 @@ import type {
   ChannelType
 } from '@/types/webex';
 import { getScenarioById } from '@/lib/demoScenarios';
+import { isDemoMode } from '@/lib/webexEnvironment';
 
 interface WebexContextType {
   // Connection state
@@ -27,6 +28,7 @@ interface WebexContextType {
   isConnected: boolean;
   connectionError: string | null;
   isLoading: boolean;
+  isDemoMode: boolean;
   
   // Agent info
   agentProfile: AgentProfile | null;
@@ -175,14 +177,12 @@ const mockExtendedMetrics: ExtendedMetrics = {
   callsTrend: 'up',
 };
 
-// Demo mode detection - set to true when not running inside Webex CC Desktop
-const DEMO_MODE = true;
-
 export function WebexProvider({ children }: { children: React.ReactNode }) {
   const [isInitialized, setIsInitialized] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [runningInDemoMode, setRunningInDemoMode] = useState(true);
   
   const [agentProfile, setAgentProfile] = useState<AgentProfile | null>(null);
   const [agentState, setAgentStateInfo] = useState<AgentStateInfo | null>(null);
@@ -191,11 +191,11 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   const [incomingTask, setIncomingTask] = useState<IncomingTask | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   
-  const [idleCodes] = useState<IdleCode[]>(mockIdleCodes);
-  const [wrapUpCodes] = useState<WrapUpCode[]>(mockWrapUpCodes);
-  const [queues] = useState<Queue[]>(mockQueues);
+  const [idleCodes, setIdleCodes] = useState<IdleCode[]>(mockIdleCodes);
+  const [wrapUpCodes, setWrapUpCodes] = useState<WrapUpCode[]>(mockWrapUpCodes);
+  const [queues, setQueues] = useState<Queue[]>(mockQueues);
   const [teamAgents, setTeamAgents] = useState<TeamAgent[]>(mockTeamAgents);
-  const [entryPoints] = useState<EntryPoint[]>(mockEntryPoints);
+  const [entryPoints, setEntryPoints] = useState<EntryPoint[]>(mockEntryPoints);
   
   const [agentMetrics, setAgentMetrics] = useState<AgentMetrics | null>(null);
   const [extendedMetrics, setExtendedMetrics] = useState<ExtendedMetrics | null>(null);
@@ -211,13 +211,18 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   const [demoAutoIncomingEnabled, setDemoAutoIncomingEnabled] = useState(true);
 
   const ronaTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const desktopRef = useRef<any>(null);
 
   // Initialize SDK and auto-fetch agent session
   const initialize = useCallback(async () => {
     setIsLoading(true);
+    const demoMode = isDemoMode();
+    setRunningInDemoMode(demoMode);
+    
     try {
-      if (DEMO_MODE) {
+      if (demoMode) {
         // Demo mode: simulate SDK initialization and provide mock agent data
+        console.log('[WebexCC] Running in DEMO mode - not embedded in Agent Desktop');
         await new Promise(resolve => setTimeout(resolve, 1000));
         
         // Auto-populate agent profile (agent is already logged in via Webex CC)
@@ -250,11 +255,116 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
         
         console.log('[WebexCC] Demo mode - Agent session loaded');
       } else {
-        // Real SDK integration
-        // const Desktop = await import('@wxcc-desktop/sdk');
-        // await Desktop.default.config.init();
-        // const agentInfo = await Desktop.default.agentStateInfo.getAgentInfo();
-        // Subscribe to state change events, etc.
+        // Real SDK integration - running inside Webex CC Agent Desktop
+        console.log('[WebexCC] Running in PRODUCTION mode - embedded in Agent Desktop');
+        
+        try {
+          const Desktop = await import('@wxcc-desktop/sdk');
+          desktopRef.current = Desktop.default;
+          
+          // Initialize the SDK
+          await desktopRef.current.config.init({
+            widgetName: 'BSAgentDesktop',
+            widgetProvider: 'b+s',
+          });
+          
+          console.log('[WebexCC] SDK initialized successfully');
+          
+          // Get agent info from the SDK
+          const agentInfo = desktopRef.current.agentStateInfo.latestData;
+          
+          if (agentInfo) {
+            setAgentProfile({
+              agentId: agentInfo.agentId || '',
+              name: agentInfo.agentName || agentInfo.agentId || 'Agent',
+              email: agentInfo.agentEmail || '',
+              teamId: agentInfo.teamId || '',
+              teamName: agentInfo.teamName || '',
+              siteId: agentInfo.siteId || '',
+              siteName: agentInfo.siteName || '',
+              extension: agentInfo.extension || '',
+              dialNumber: agentInfo.dn || '',
+            });
+            
+            setAgentStateInfo({
+              state: mapSdkStateToAgentState(agentInfo.status),
+              idleCode: agentInfo.auxCodeId ? { id: agentInfo.auxCodeId, name: agentInfo.auxCodeName || '' } : undefined,
+              lastStateChangeTime: agentInfo.stateChangeTimestamp || Date.now(),
+            });
+            
+            console.log('[WebexCC] Agent info loaded:', agentInfo.agentName);
+          }
+          
+          // Subscribe to agent state changes
+          desktopRef.current.agentStateInfo.addEventListener('updated', (data: any) => {
+            console.log('[WebexCC] Agent state updated:', data);
+            setAgentStateInfo({
+              state: mapSdkStateToAgentState(data.status),
+              idleCode: data.auxCodeId ? { id: data.auxCodeId, name: data.auxCodeName || '' } : undefined,
+              lastStateChangeTime: data.stateChangeTimestamp || Date.now(),
+            });
+          });
+          
+          // Fetch idle codes from the SDK
+          try {
+            const sdkIdleCodes = await desktopRef.current.actions.getIdleCodes();
+            if (sdkIdleCodes && Array.isArray(sdkIdleCodes)) {
+              setIdleCodes(sdkIdleCodes.map((code: any) => ({
+                id: code.id,
+                name: code.name,
+              })));
+              console.log('[WebexCC] Idle codes loaded:', sdkIdleCodes.length);
+            }
+          } catch (e) {
+            console.warn('[WebexCC] Could not fetch idle codes:', e);
+          }
+          
+          // Fetch wrap-up codes from the SDK
+          try {
+            const sdkWrapUpCodes = await desktopRef.current.actions.getWrapUpCodes();
+            if (sdkWrapUpCodes && Array.isArray(sdkWrapUpCodes)) {
+              setWrapUpCodes(sdkWrapUpCodes.map((code: any) => ({
+                id: code.id,
+                name: code.name,
+              })));
+              console.log('[WebexCC] Wrap-up codes loaded:', sdkWrapUpCodes.length);
+            }
+          } catch (e) {
+            console.warn('[WebexCC] Could not fetch wrap-up codes:', e);
+          }
+          
+          // Subscribe to contact events
+          desktopRef.current.agentContact.addEventListener('eAgentOfferContact', (contact: any) => {
+            console.log('[WebexCC] Incoming contact offer:', contact);
+            handleIncomingContact(contact);
+          });
+          
+          desktopRef.current.agentContact.addEventListener('eAgentContactAssigned', (contact: any) => {
+            console.log('[WebexCC] Contact assigned:', contact);
+            handleContactAssigned(contact);
+          });
+          
+          desktopRef.current.agentContact.addEventListener('eAgentContactEnded', (contact: any) => {
+            console.log('[WebexCC] Contact ended:', contact);
+            handleContactEnded(contact);
+          });
+          
+          desktopRef.current.agentContact.addEventListener('eAgentContactWrappedUp', (contact: any) => {
+            console.log('[WebexCC] Contact wrapped up:', contact);
+            handleContactWrappedUp(contact);
+          });
+          
+          desktopRef.current.agentContact.addEventListener('eAgentWrapup', (contact: any) => {
+            console.log('[WebexCC] Agent wrapup state:', contact);
+            handleAgentWrapup(contact);
+          });
+          
+        } catch (sdkError) {
+          console.error('[WebexCC] SDK initialization failed:', sdkError);
+          // Fall back to demo mode if SDK fails
+          setRunningInDemoMode(true);
+          setConnectionError('SDK initialization failed - running in demo mode');
+        }
       }
       
       setIsInitialized(true);
@@ -267,17 +377,151 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       setIsLoading(false);
     }
   }, []);
+  
+  // Map SDK state strings to our AgentState type
+  const mapSdkStateToAgentState = (sdkState: string): AgentState => {
+    const stateMap: Record<string, AgentState> = {
+      'Available': 'Available',
+      'Idle': 'Idle',
+      'RONA': 'RONA',
+      'Engaged': 'Engaged',
+      'WrapUp': 'WrapUp',
+      'Offline': 'Offline',
+    };
+    return stateMap[sdkState] || 'Offline';
+  };
+  
+  // Handle incoming contact offer
+  const handleIncomingContact = (contact: any) => {
+    const taskId = contact.interactionId || contact.id || `task-${Date.now()}`;
+    setIncomingTask({
+      taskId,
+      mediaType: mapMediaType(contact.mediaType),
+      ani: contact.ani || contact.from || 'Unknown',
+      queueName: contact.queueName || 'Unknown Queue',
+      ronaTimeout: contact.ronaTimeout || 15,
+      startTime: Date.now(),
+    });
+    
+    // RONA timer
+    const timeout = (contact.ronaTimeout || 15) * 1000;
+    ronaTimerRef.current = setTimeout(() => {
+      setIncomingTask(null);
+      setAgentStateInfo(prev => prev ? { ...prev, state: 'RONA' } : null);
+    }, timeout);
+  };
+  
+  // Handle contact assigned (accepted)
+  const handleContactAssigned = (contact: any) => {
+    if (ronaTimerRef.current) {
+      clearTimeout(ronaTimerRef.current);
+    }
+    
+    const taskId = contact.interactionId || contact.id;
+    const newTask: Task = {
+      taskId,
+      mediaType: mapMediaType(contact.mediaType),
+      mediaChannel: contact.mediaChannel || 'telephony',
+      state: 'connected',
+      direction: contact.direction || 'inbound',
+      queueName: contact.queueName || 'Unknown Queue',
+      ani: contact.ani || contact.from || '',
+      dnis: contact.dnis || contact.to || '',
+      startTime: Date.now(),
+      isRecording: contact.isRecording || false,
+      isMuted: false,
+      isHeld: false,
+      wrapUpRequired: contact.wrapUpRequired !== false,
+      cadVariables: contact.cadVariables || {},
+      customerName: contact.customerName,
+      customerEmail: contact.customerEmail,
+      customerPhone: contact.ani,
+    };
+    
+    setActiveTasks(prev => [...prev.filter(t => t.taskId !== taskId), newTask]);
+    setSelectedTaskId(taskId);
+    setIncomingTask(null);
+  };
+  
+  // Handle contact ended
+  const handleContactEnded = (contact: any) => {
+    const taskId = contact.interactionId || contact.id;
+    const task = activeTasks.find(t => t.taskId === taskId);
+    
+    if (task?.wrapUpRequired) {
+      setActiveTasks(prev => prev.map(t => 
+        t.taskId === taskId ? { ...t, state: 'wrapup' } : t
+      ));
+    } else {
+      setActiveTasks(prev => prev.filter(t => t.taskId !== taskId));
+      if (selectedTaskId === taskId) {
+        setSelectedTaskId(activeTasks.find(t => t.taskId !== taskId)?.taskId || null);
+      }
+    }
+  };
+  
+  // Handle contact wrapped up
+  const handleContactWrappedUp = (contact: any) => {
+    const taskId = contact.interactionId || contact.id;
+    setActiveTasks(prev => prev.filter(t => t.taskId !== taskId));
+    if (selectedTaskId === taskId) {
+      setSelectedTaskId(activeTasks.find(t => t.taskId !== taskId)?.taskId || null);
+    }
+    setCustomerProfile(null);
+  };
+  
+  // Handle wrapup state
+  const handleAgentWrapup = (contact: any) => {
+    const taskId = contact.interactionId || contact.id;
+    setActiveTasks(prev => prev.map(t => 
+      t.taskId === taskId ? { ...t, state: 'wrapup' } : t
+    ));
+  };
+  
+  // Map SDK media type to our ChannelType
+  const mapMediaType = (sdkMediaType: string): ChannelType => {
+    const typeMap: Record<string, ChannelType> = {
+      'telephony': 'voice',
+      'voice': 'voice',
+      'chat': 'chat',
+      'email': 'email',
+      'social': 'social',
+    };
+    return typeMap[sdkMediaType?.toLowerCase()] || 'voice';
+  };
 
   // Set agent state
   const setAgentState = useCallback(async (state: AgentState, idleCodeId?: string) => {
-    const idleCode = idleCodeId ? idleCodes.find(c => c.id === idleCodeId) : undefined;
-    setAgentStateInfo({
-      state,
-      idleCode,
-      lastStateChangeTime: Date.now(),
-    });
-    console.log('[WebexCC] State changed to:', state, idleCode?.name);
-  }, [idleCodes]);
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        // Real SDK call
+        console.log('[WebexCC] Setting agent state via SDK:', state, idleCodeId);
+        await desktopRef.current.agentStateInfo.stateChange({
+          state: state,
+          auxCodeId: idleCodeId,
+        });
+        // State will be updated via the 'updated' event listener
+      } else {
+        // Demo mode - update local state directly
+        const idleCode = idleCodeId ? idleCodes.find(c => c.id === idleCodeId) : undefined;
+        setAgentStateInfo({
+          state,
+          idleCode,
+          lastStateChangeTime: Date.now(),
+        });
+      }
+      console.log('[WebexCC] State change requested:', state, idleCodeId);
+    } catch (error) {
+      console.error('[WebexCC] State change failed:', error);
+      // Update local state anyway for UI responsiveness
+      const idleCode = idleCodeId ? idleCodes.find(c => c.id === idleCodeId) : undefined;
+      setAgentStateInfo({
+        state,
+        idleCode,
+        lastStateChangeTime: Date.now(),
+      });
+    }
+  }, [runningInDemoMode, idleCodes]);
 
   // Accept incoming task
   const acceptTask = useCallback(async (taskId: string) => {
@@ -287,6 +531,19 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       clearTimeout(ronaTimerRef.current);
     }
     
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        // Real SDK call
+        console.log('[WebexCC] Accepting task via SDK:', taskId);
+        await desktopRef.current.agentContact.accept({ interactionId: taskId });
+        // Task assignment will be handled via event listener
+        return;
+      }
+    } catch (error) {
+      console.error('[WebexCC] Accept task failed:', error);
+    }
+    
+    // Demo mode or fallback
     const newTask: Task = {
       taskId,
       mediaType: incomingTask.mediaType,
@@ -336,51 +593,109 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     setIncomingTask(null);
     setAgentStateInfo(prev => prev ? { ...prev, state: 'Engaged' } : null);
     console.log('[WebexCC] Task accepted:', taskId);
-  }, [incomingTask]);
+  }, [incomingTask, runningInDemoMode]);
 
   // Decline incoming task
   const declineTask = useCallback(async (taskId: string) => {
     if (ronaTimerRef.current) {
       clearTimeout(ronaTimerRef.current);
     }
+    
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Declining task via SDK:', taskId);
+        await desktopRef.current.agentContact.decline({ interactionId: taskId });
+      }
+    } catch (error) {
+      console.error('[WebexCC] Decline task failed:', error);
+    }
+    
     setIncomingTask(null);
     console.log('[WebexCC] Task declined:', taskId);
-  }, []);
+  }, [runningInDemoMode]);
 
   // Hold task
   const holdTask = useCallback(async (taskId: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Holding task via SDK:', taskId);
+        await desktopRef.current.agentContact.hold({ interactionId: taskId });
+      }
+    } catch (error) {
+      console.error('[WebexCC] Hold task failed:', error);
+    }
+    
     setActiveTasks(prev => prev.map(t => 
       t.taskId === taskId ? { ...t, isHeld: true, state: 'held' } : t
     ));
     console.log('[WebexCC] Task held:', taskId);
-  }, []);
+  }, [runningInDemoMode]);
 
   // Resume task
   const resumeTask = useCallback(async (taskId: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Resuming task via SDK:', taskId);
+        await desktopRef.current.agentContact.unhold({ interactionId: taskId });
+      }
+    } catch (error) {
+      console.error('[WebexCC] Resume task failed:', error);
+    }
+    
     setActiveTasks(prev => prev.map(t => 
       t.taskId === taskId ? { ...t, isHeld: false, state: 'connected' } : t
     ));
     console.log('[WebexCC] Task resumed:', taskId);
-  }, []);
+  }, [runningInDemoMode]);
 
   // Mute task
   const muteTask = useCallback(async (taskId: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Muting task via SDK:', taskId);
+        await desktopRef.current.agentContact.mute({ interactionId: taskId });
+      }
+    } catch (error) {
+      console.error('[WebexCC] Mute task failed:', error);
+    }
+    
     setActiveTasks(prev => prev.map(t => 
       t.taskId === taskId ? { ...t, isMuted: true } : t
     ));
     console.log('[WebexCC] Task muted:', taskId);
-  }, []);
+  }, [runningInDemoMode]);
 
   // Unmute task
   const unmuteTask = useCallback(async (taskId: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Unmuting task via SDK:', taskId);
+        await desktopRef.current.agentContact.unmute({ interactionId: taskId });
+      }
+    } catch (error) {
+      console.error('[WebexCC] Unmute task failed:', error);
+    }
+    
     setActiveTasks(prev => prev.map(t => 
       t.taskId === taskId ? { ...t, isMuted: false } : t
     ));
     console.log('[WebexCC] Task unmuted:', taskId);
-  }, []);
+  }, [runningInDemoMode]);
 
   // End task
   const endTask = useCallback(async (taskId: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Ending task via SDK:', taskId);
+        await desktopRef.current.agentContact.end({ interactionId: taskId });
+        // State will be updated via event listener
+        return;
+      }
+    } catch (error) {
+      console.error('[WebexCC] End task failed:', error);
+    }
+    
+    // Demo mode or fallback
     const task = activeTasks.find(t => t.taskId === taskId);
     if (task?.wrapUpRequired) {
       setActiveTasks(prev => prev.map(t => 
@@ -396,10 +711,25 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     }
     setConsultState({ isConsulting: false });
     console.log('[WebexCC] Task ended:', taskId);
-  }, [activeTasks, selectedTaskId]);
+  }, [activeTasks, selectedTaskId, runningInDemoMode]);
 
   // Wrap up task
   const wrapUpTask = useCallback(async (taskId: string, wrapUpCodeId: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Wrapping up task via SDK:', taskId, wrapUpCodeId);
+        await desktopRef.current.agentContact.wrapup({
+          interactionId: taskId,
+          wrapUpCodeId: wrapUpCodeId,
+        });
+        // State will be updated via event listener
+        return;
+      }
+    } catch (error) {
+      console.error('[WebexCC] Wrap up task failed:', error);
+    }
+    
+    // Demo mode or fallback
     setActiveTasks(prev => prev.filter(t => t.taskId !== taskId));
     if (selectedTaskId === taskId) {
       setSelectedTaskId(activeTasks.find(t => t.taskId !== taskId)?.taskId || null);
@@ -409,10 +739,25 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     }
     setCustomerProfile(null);
     console.log('[WebexCC] Task wrapped up:', taskId, 'with code:', wrapUpCodeId);
-  }, [activeTasks, selectedTaskId]);
+  }, [activeTasks, selectedTaskId, runningInDemoMode]);
 
   // Transfer to queue (blind)
   const transferToQueue = useCallback(async (taskId: string, queueId: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Transferring to queue via SDK:', taskId, queueId);
+        await desktopRef.current.agentContact.blindTransfer({
+          interactionId: taskId,
+          transferTo: queueId,
+          transferType: 'queue',
+        });
+        return;
+      }
+    } catch (error) {
+      console.error('[WebexCC] Transfer to queue failed:', error);
+    }
+    
+    // Demo mode or fallback
     setActiveTasks(prev => prev.filter(t => t.taskId !== taskId));
     if (selectedTaskId === taskId) {
       setSelectedTaskId(null);
@@ -423,10 +768,25 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     setConsultState({ isConsulting: false });
     setCustomerProfile(null);
     console.log('[WebexCC] Transferred to queue:', queueId);
-  }, [activeTasks.length, selectedTaskId]);
+  }, [activeTasks.length, selectedTaskId, runningInDemoMode]);
 
   // Transfer to agent (blind)
   const transferToAgent = useCallback(async (taskId: string, agentId: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Transferring to agent via SDK:', taskId, agentId);
+        await desktopRef.current.agentContact.blindTransfer({
+          interactionId: taskId,
+          transferTo: agentId,
+          transferType: 'agent',
+        });
+        return;
+      }
+    } catch (error) {
+      console.error('[WebexCC] Transfer to agent failed:', error);
+    }
+    
+    // Demo mode or fallback
     setActiveTasks(prev => prev.filter(t => t.taskId !== taskId));
     if (selectedTaskId === taskId) {
       setSelectedTaskId(null);
@@ -437,10 +797,25 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     setConsultState({ isConsulting: false });
     setCustomerProfile(null);
     console.log('[WebexCC] Transferred to agent:', agentId);
-  }, [activeTasks.length, selectedTaskId]);
+  }, [activeTasks.length, selectedTaskId, runningInDemoMode]);
 
   // Transfer to DN (blind)
   const transferToDN = useCallback(async (taskId: string, dialNumber: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Transferring to DN via SDK:', taskId, dialNumber);
+        await desktopRef.current.agentContact.blindTransfer({
+          interactionId: taskId,
+          transferTo: dialNumber,
+          transferType: 'dn',
+        });
+        return;
+      }
+    } catch (error) {
+      console.error('[WebexCC] Transfer to DN failed:', error);
+    }
+    
+    // Demo mode or fallback
     setActiveTasks(prev => prev.filter(t => t.taskId !== taskId));
     if (selectedTaskId === taskId) {
       setSelectedTaskId(null);
@@ -451,10 +826,23 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     setConsultState({ isConsulting: false });
     setCustomerProfile(null);
     console.log('[WebexCC] Transferred to DN:', dialNumber);
-  }, [activeTasks.length, selectedTaskId]);
+  }, [activeTasks.length, selectedTaskId, runningInDemoMode]);
 
   // Consult agent (warm transfer start)
   const consultAgent = useCallback(async (taskId: string, agentId: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Consulting agent via SDK:', taskId, agentId);
+        await desktopRef.current.agentContact.consult({
+          interactionId: taskId,
+          consultTo: agentId,
+          consultType: 'agent',
+        });
+      }
+    } catch (error) {
+      console.error('[WebexCC] Consult agent failed:', error);
+    }
+    
     const agent = teamAgents.find(a => a.agentId === agentId);
     setActiveTasks(prev => prev.map(t => 
       t.taskId === taskId ? { ...t, state: 'consulting', isHeld: true } : t
@@ -469,10 +857,23 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       consultStartTime: Date.now(),
     });
     console.log('[WebexCC] Consulting agent:', agentId);
-  }, [teamAgents]);
+  }, [teamAgents, runningInDemoMode]);
 
   // Consult queue (warm transfer start)
   const consultQueue = useCallback(async (taskId: string, queueId: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Consulting queue via SDK:', taskId, queueId);
+        await desktopRef.current.agentContact.consult({
+          interactionId: taskId,
+          consultTo: queueId,
+          consultType: 'queue',
+        });
+      }
+    } catch (error) {
+      console.error('[WebexCC] Consult queue failed:', error);
+    }
+    
     const queue = queues.find(q => q.id === queueId);
     setActiveTasks(prev => prev.map(t => 
       t.taskId === taskId ? { ...t, state: 'consulting', isHeld: true } : t
@@ -487,10 +888,23 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       consultStartTime: Date.now(),
     });
     console.log('[WebexCC] Consulting queue:', queueId);
-  }, [queues]);
+  }, [queues, runningInDemoMode]);
 
   // Consult DN (warm transfer start)
   const consultDN = useCallback(async (taskId: string, dialNumber: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Consulting DN via SDK:', taskId, dialNumber);
+        await desktopRef.current.agentContact.consult({
+          interactionId: taskId,
+          consultTo: dialNumber,
+          consultType: 'dn',
+        });
+      }
+    } catch (error) {
+      console.error('[WebexCC] Consult DN failed:', error);
+    }
+    
     setActiveTasks(prev => prev.map(t => 
       t.taskId === taskId ? { ...t, state: 'consulting', isHeld: true } : t
     ));
@@ -504,10 +918,21 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       consultStartTime: Date.now(),
     });
     console.log('[WebexCC] Consulting DN:', dialNumber);
-  }, []);
+  }, [runningInDemoMode]);
 
   // Complete transfer (after consult)
   const completeTransfer = useCallback(async (taskId: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Completing transfer via SDK:', taskId);
+        await desktopRef.current.agentContact.consultTransfer({ interactionId: taskId });
+        return;
+      }
+    } catch (error) {
+      console.error('[WebexCC] Complete transfer failed:', error);
+    }
+    
+    // Demo mode or fallback
     setActiveTasks(prev => prev.filter(t => t.taskId !== taskId));
     if (selectedTaskId === taskId) {
       setSelectedTaskId(null);
@@ -518,27 +943,60 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     setConsultState({ isConsulting: false });
     setCustomerProfile(null);
     console.log('[WebexCC] Transfer completed');
-  }, [activeTasks.length, selectedTaskId]);
+  }, [activeTasks.length, selectedTaskId, runningInDemoMode]);
 
   // Cancel consult
   const cancelConsult = useCallback(async (taskId: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Cancelling consult via SDK:', taskId);
+        await desktopRef.current.agentContact.consultEnd({ interactionId: taskId });
+      }
+    } catch (error) {
+      console.error('[WebexCC] Cancel consult failed:', error);
+    }
+    
     setActiveTasks(prev => prev.map(t => 
       t.taskId === taskId ? { ...t, state: 'connected', isHeld: false } : t
     ));
     setConsultState({ isConsulting: false });
     console.log('[WebexCC] Consult cancelled');
-  }, []);
+  }, [runningInDemoMode]);
 
   // Conference call
   const conferenceCall = useCallback(async (taskId: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Starting conference via SDK:', taskId);
+        await desktopRef.current.agentContact.conference({ interactionId: taskId });
+      }
+    } catch (error) {
+      console.error('[WebexCC] Conference failed:', error);
+    }
+    
     setActiveTasks(prev => prev.map(t => 
       t.taskId === taskId ? { ...t, state: 'conferencing', isHeld: false } : t
     ));
     console.log('[WebexCC] Conference started');
-  }, []);
+  }, [runningInDemoMode]);
 
   // Outdial
   const outdial = useCallback(async (dialNumber: string, entryPointId: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Outdialing via SDK:', dialNumber, entryPointId);
+        await desktopRef.current.agentContact.outdial({
+          dialNumber: dialNumber,
+          entryPointId: entryPointId,
+        });
+        // Contact will be created via event listener
+        return;
+      }
+    } catch (error) {
+      console.error('[WebexCC] Outdial failed:', error);
+    }
+    
+    // Demo mode or fallback
     const entryPoint = entryPoints.find(ep => ep.id === entryPointId);
     const newTask: Task = {
       taskId: `outbound-${Date.now()}`,
@@ -573,27 +1031,57 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     setSelectedTaskId(newTask.taskId);
     setAgentStateInfo(prev => prev ? { ...prev, state: 'Engaged' } : null);
     console.log('[WebexCC] Outdial to:', dialNumber);
-  }, [agentProfile?.dialNumber, entryPoints]);
+  }, [agentProfile?.dialNumber, entryPoints, runningInDemoMode]);
 
   // Recording controls
   const startRecording = useCallback(async (taskId: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Starting recording via SDK:', taskId);
+        await desktopRef.current.agentContact.pauseRecording({ interactionId: taskId, pause: false });
+      }
+    } catch (error) {
+      console.error('[WebexCC] Start recording failed:', error);
+    }
+    
     setActiveTasks(prev => prev.map(t => 
       t.taskId === taskId ? { ...t, isRecording: true } : t
     ));
     console.log('[WebexCC] Recording started:', taskId);
-  }, []);
+  }, [runningInDemoMode]);
 
   const stopRecording = useCallback(async (taskId: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Stopping recording via SDK:', taskId);
+        await desktopRef.current.agentContact.pauseRecording({ interactionId: taskId, pause: true });
+      }
+    } catch (error) {
+      console.error('[WebexCC] Stop recording failed:', error);
+    }
+    
     setActiveTasks(prev => prev.map(t => 
       t.taskId === taskId ? { ...t, isRecording: false } : t
     ));
     console.log('[WebexCC] Recording stopped:', taskId);
-  }, []);
+  }, [runningInDemoMode]);
 
   // Send chat message
   const sendChatMessage = useCallback(async (taskId: string, message: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Sending chat message via SDK:', taskId);
+        await desktopRef.current.agentContact.sendChatMessage({
+          interactionId: taskId,
+          message: message,
+        });
+      }
+    } catch (error) {
+      console.error('[WebexCC] Send chat message failed:', error);
+    }
+    
     console.log('[WebexCC] Chat message sent:', taskId, message);
-  }, []);
+  }, [runningInDemoMode]);
 
   // Select task
   const selectTask = useCallback((taskId: string) => {
@@ -602,6 +1090,18 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
 
   // Update CAD variable
   const updateCADVariable = useCallback(async (taskId: string, key: string, value: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Updating CAD variable via SDK:', taskId, key, value);
+        await desktopRef.current.agentContact.updateCadVariables({
+          interactionId: taskId,
+          cadVariables: { [key]: value },
+        });
+      }
+    } catch (error) {
+      console.error('[WebexCC] Update CAD variable failed:', error);
+    }
+    
     setActiveTasks(prev => prev.map(t => 
       t.taskId === taskId 
         ? { ...t, cadVariables: { ...t.cadVariables, [key]: value } }
@@ -613,7 +1113,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       : null
     );
     console.log('[WebexCC] CAD updated:', taskId, key, value);
-  }, []);
+  }, [runningInDemoMode]);
 
   // Add customer note
   const addCustomerNote = useCallback(async (note: string) => {
@@ -636,6 +1136,11 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
 
   // Demo: Trigger incoming task manually
   const triggerIncomingTask = useCallback((mediaType: ChannelType, queueId?: string) => {
+    if (!runningInDemoMode) {
+      console.log('[WebexCC] Demo functions disabled in production mode');
+      return;
+    }
+    
     const taskId = `task-${Date.now()}`;
     const queue = queueId 
       ? mockQueues.find(q => q.id === queueId) 
@@ -657,7 +1162,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     }, 15000);
     
     console.log('[WebexCC Demo] Triggered incoming task:', mediaType);
-  }, []);
+  }, [runningInDemoMode]);
 
   // Demo: Apply customer scenario
   const applyCustomerScenario = useCallback((scenarioId: string) => {
@@ -689,10 +1194,15 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
 
   // Demo: Trigger RONA
   const triggerRONA = useCallback(() => {
+    if (!runningInDemoMode) {
+      console.log('[WebexCC] Demo functions disabled in production mode');
+      return;
+    }
+    
     setIncomingTask(null);
     setAgentStateInfo(prev => prev ? { ...prev, state: 'RONA' } : null);
     console.log('[WebexCC Demo] Triggered RONA');
-  }, []);
+  }, [runningInDemoMode]);
 
   // Demo: Clear all tasks
   const clearAllTasks = useCallback(() => {
@@ -709,6 +1219,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
 
   // Simulate incoming call for demo (respects demoAutoIncomingEnabled)
   useEffect(() => {
+    if (!runningInDemoMode) return;
     if (!demoAutoIncomingEnabled) return;
     if (!agentState || agentState.state !== 'Available') return;
     
@@ -734,13 +1245,14 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     }, 8000);
     
     return () => clearTimeout(timer);
-  }, [agentState?.state, demoAutoIncomingEnabled]);
+  }, [agentState?.state, demoAutoIncomingEnabled, runningInDemoMode]);
 
   const value: WebexContextType = {
     isInitialized,
     isConnected,
     isLoading,
     connectionError,
+    isDemoMode: runningInDemoMode,
     agentProfile,
     agentState,
     activeTasks,
