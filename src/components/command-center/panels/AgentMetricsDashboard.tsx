@@ -1,15 +1,18 @@
-import { useWebex } from '@/contexts/WebexContext';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
+import { Badge } from '@/components/ui/badge';
 import {
   BarChart3, Clock, Phone, TrendingUp, TrendingDown,
-  CheckCircle, Users, Timer, Target
+  CheckCircle, Users, Timer, Target, RefreshCw, Loader2
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip,
   PieChart, Pie, Cell, LineChart, Line
 } from 'recharts';
+import { useWebexAnalytics } from '@/hooks/useWebexAnalytics';
+import { isDemoMode } from '@/lib/webexEnvironment';
 
 const COLORS = {
   available: 'hsl(var(--state-available))',
@@ -19,14 +22,16 @@ const COLORS = {
 };
 
 export function AgentMetricsDashboard() {
-  const { agentMetrics, extendedMetrics } = useWebex();
+  const { metrics, extendedMetrics, isLoading, error, refresh, lastUpdated } = useWebexAnalytics();
+  const demoMode = isDemoMode();
 
-  if (!agentMetrics || !extendedMetrics) {
+  if (!metrics || !extendedMetrics) {
     return (
       <div className="h-full flex items-center justify-center text-muted-foreground">
         <div className="text-center">
           <BarChart3 className="w-12 h-12 mx-auto mb-3 opacity-30" />
           <p>Login to view analytics</p>
+          {error && <p className="text-xs text-destructive mt-2">{error}</p>}
         </div>
       </div>
     );
@@ -40,7 +45,7 @@ export function AgentMetricsDashboard() {
 
   const callsTrend = extendedMetrics.callsTrend;
   const callsDiff = extendedMetrics.callsYesterday
-    ? agentMetrics.callsHandled - extendedMetrics.callsYesterday
+    ? metrics.callsHandled - extendedMetrics.callsYesterday
     : 0;
 
   // Prepare chart data
@@ -63,6 +68,35 @@ export function AgentMetricsDashboard() {
 
   return (
     <div className="h-full overflow-auto p-4 space-y-4 animate-fade-in">
+      {/* Header with refresh */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h2 className="text-lg font-semibold">Agent Analytics</h2>
+          {demoMode && (
+            <Badge variant="outline" className="text-xs">Demo Mode</Badge>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {lastUpdated && (
+            <span className="text-xs text-muted-foreground">
+              Updated {lastUpdated.toLocaleTimeString()}
+            </span>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={refresh}
+            disabled={isLoading}
+          >
+            {isLoading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+          </Button>
+        </div>
+      </div>
+
       {/* Key Metrics Row */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {/* Calls Handled */}
@@ -82,7 +116,7 @@ export function AgentMetricsDashboard() {
                 </div>
               )}
             </div>
-            <p className="text-2xl font-bold mt-3">{agentMetrics.callsHandled}</p>
+            <p className="text-2xl font-bold mt-3">{metrics.callsHandled}</p>
             <p className="text-xs text-muted-foreground">Calls Handled</p>
           </CardContent>
         </Card>
@@ -95,7 +129,7 @@ export function AgentMetricsDashboard() {
                 <Clock className="w-5 h-5 text-blue-500" />
               </div>
             </div>
-            <p className="text-2xl font-bold mt-3">{formatTime(agentMetrics.avgHandleTime)}</p>
+            <p className="text-2xl font-bold mt-3">{formatTime(metrics.avgHandleTime)}</p>
             <p className="text-xs text-muted-foreground">Avg Handle Time</p>
           </CardContent>
         </Card>
@@ -108,9 +142,9 @@ export function AgentMetricsDashboard() {
                 <Timer className="w-5 h-5 text-amber-500" />
               </div>
             </div>
-            <p className="text-2xl font-bold mt-3">{agentMetrics.occupancy}%</p>
+            <p className="text-2xl font-bold mt-3">{metrics.occupancy}%</p>
             <p className="text-xs text-muted-foreground">Occupancy</p>
-            <Progress value={agentMetrics.occupancy} className="h-1 mt-2" />
+            <Progress value={metrics.occupancy} className="h-1 mt-2" />
           </CardContent>
         </Card>
 
@@ -122,9 +156,9 @@ export function AgentMetricsDashboard() {
                 <Target className="w-5 h-5 text-green-500" />
               </div>
             </div>
-            <p className="text-2xl font-bold mt-3">{agentMetrics.adherence}%</p>
+            <p className="text-2xl font-bold mt-3">{metrics.adherence}%</p>
             <p className="text-xs text-muted-foreground">Adherence</p>
-            <Progress value={agentMetrics.adherence} className="h-1 mt-2" />
+            <Progress value={metrics.adherence} className="h-1 mt-2" />
           </CardContent>
         </Card>
       </div>
@@ -269,6 +303,17 @@ export function AgentMetricsDashboard() {
           </div>
         </CardContent>
       </Card>
+
+      {/* API Information (for real mode) */}
+      {!demoMode && (
+        <Card className="border-dashed">
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground text-center">
+              Data fetched from Webex CC APIs: Agent Statistics, Agent Activities, and GraphQL Search
+            </p>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
