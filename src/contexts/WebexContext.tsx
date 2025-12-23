@@ -19,9 +19,9 @@ import type {
   ExtendedMetrics,
   ChannelType
 } from '@/types/webex';
+import type { SDKLogEntry, SDKLogLevel } from '@/types/sdk-debug';
 import { getScenarioById } from '@/lib/demoScenarios';
-import { isDemoMode } from '@/lib/webexEnvironment';
-
+import { isDemoMode, getEnvironmentDiagnostics } from '@/lib/webexEnvironment';
 interface WebexContextType {
   // Connection state
   isInitialized: boolean;
@@ -60,6 +60,11 @@ interface WebexContextType {
   customerProfile: CustomerProfile | null;
   customerNotes: CustomerNote[];
   interactionHistory: CallLogEntry[];
+  
+  // SDK Debug Logs
+  sdkLogs: SDKLogEntry[];
+  clearSDKLogs: () => void;
+  exportSDKLogs: () => string;
   
   // Demo settings reference
   demoAutoIncomingEnabled: boolean;
@@ -211,8 +216,54 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   // Demo control state
   const [demoAutoIncomingEnabled, setDemoAutoIncomingEnabled] = useState(true);
 
+  // SDK Debug Logs state
+  const [sdkLogs, setSdkLogs] = useState<SDKLogEntry[]>([]);
+  const logIdCounter = useRef(0);
+
   const ronaTimerRef = useRef<NodeJS.Timeout | null>(null);
   const desktopRef = useRef<any>(null);
+
+  // SDK Logging helper
+  const addSDKLog = useCallback((level: SDKLogLevel, message: string, data?: unknown, source?: string) => {
+    const entry: SDKLogEntry = {
+      id: `log-${Date.now()}-${logIdCounter.current++}`,
+      timestamp: Date.now(),
+      level,
+      message,
+      data,
+      source,
+    };
+
+    // Also log to console
+    const consoleMethod = level === 'error' ? console.error 
+                        : level === 'warn' ? console.warn 
+                        : level === 'debug' ? console.debug 
+                        : console.log;
+    consoleMethod(`[SDK ${level.toUpperCase()}] ${source ? `[${source}] ` : ''}${message}`, data ?? '');
+
+    setSdkLogs(prev => {
+      const newLogs = [...prev, entry];
+      // Keep only last 500 logs
+      if (newLogs.length > 500) {
+        return newLogs.slice(-500);
+      }
+      return newLogs;
+    });
+  }, []);
+
+  const clearSDKLogs = useCallback(() => {
+    setSdkLogs([]);
+  }, []);
+
+  const exportSDKLogs = useCallback(() => {
+    return JSON.stringify({
+      exportedAt: new Date().toISOString(),
+      logs: sdkLogs.map(log => ({
+        ...log,
+        timestampISO: new Date(log.timestamp).toISOString(),
+      })),
+    }, null, 2);
+  }, [sdkLogs]);
 
   // Initialize SDK and auto-fetch agent session
   const initialize = useCallback(async () => {
@@ -1332,6 +1383,9 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     customerProfile,
     customerNotes,
     interactionHistory,
+    sdkLogs,
+    clearSDKLogs,
+    exportSDKLogs,
     demoAutoIncomingEnabled,
     setDemoAutoIncomingEnabled,
     initialize,
