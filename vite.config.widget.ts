@@ -9,7 +9,7 @@ import path from "path";
  * Webex Contact Center Agent Desktop layouts.
  * 
  * Build: npm run build:widget
- * Output: dist/bs-agent-desktop.js
+ * Output: dist-widget/bs-agent-desktop.js
  */
 export default defineConfig({
   plugins: [react()],
@@ -21,31 +21,34 @@ export default defineConfig({
   define: {
     'process.env.NODE_ENV': JSON.stringify('production'),
   },
+  css: {
+    // Ensure CSS is processed for inline imports
+    modules: {
+      localsConvention: 'camelCase',
+    },
+  },
   build: {
     lib: {
       entry: path.resolve(__dirname, 'src/main-webcomponent.ts'),
       name: 'BSAgentDesktop',
       fileName: () => 'bs-agent-desktop.js',
-      formats: ['iife'], // Immediately Invoked Function Expression for direct script inclusion
+      formats: ['iife'],
     },
     rollupOptions: {
       output: {
-        // Ensure all styles are inlined
+        // Don't output separate CSS file - it will be inlined via ?inline import
         assetFileNames: 'bs-agent-desktop.[ext]',
-        // Don't externalize anything - bundle everything
         inlineDynamicImports: true,
       },
     },
-    // Output to dist folder
+    cssCodeSplit: false,
     outDir: 'dist-widget',
     emptyOutDir: true,
-    // Generate sourcemaps for debugging
     sourcemap: true,
-    // Minify for production
     minify: 'terser',
     terserOptions: {
       compress: {
-        drop_console: false, // Keep console logs for debugging
+        drop_console: false,
       },
     },
   },
