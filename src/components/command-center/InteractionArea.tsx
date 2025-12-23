@@ -9,6 +9,7 @@ import {
 import { cn } from '@/lib/utils';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { VideoEscalationButton } from './VideoEscalationButton';
 
 const channelIcons = { voice: Phone, chat: MessageSquare, email: Mail, social: MessageSquare };
 
@@ -148,9 +149,12 @@ function ChatInteractionView() {
           <h3 className="font-semibold">{task.customerName || task.ani}</h3>
           <p className="text-xs text-muted-foreground">{task.queueName}</p>
         </div>
-        <Button variant="ghost" size="icon">
-          <MoreHorizontal className="w-5 h-5" />
-        </Button>
+        <div className="flex items-center gap-2">
+          <VideoEscalationButton taskId={task.taskId} />
+          <Button variant="ghost" size="icon">
+            <MoreHorizontal className="w-5 h-5" />
+          </Button>
+        </div>
       </div>
 
       {/* Messages */}
@@ -222,6 +226,7 @@ function EmailInteractionView() {
             <p className="text-xs text-muted-foreground">{task.customerEmail || task.ani}</p>
           </div>
           <div className="flex gap-2">
+            <VideoEscalationButton taskId={task.taskId} />
             <Button variant="outline" size="sm">
               <Reply className="w-4 h-4 mr-2" />
               Reply

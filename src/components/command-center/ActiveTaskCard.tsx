@@ -1,9 +1,10 @@
 import { useWebex } from '@/contexts/WebexContext';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Phone, MessageSquare, Mail, Pause, Play, Mic, MicOff, PhoneOff, Circle, ArrowRightLeft } from 'lucide-react';
+import { Phone, MessageSquare, Mail, Pause, Play, Mic, MicOff, PhoneOff, Circle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { Task } from '@/types/webex';
+import { VideoEscalationButton } from './VideoEscalationButton';
 
 interface ActiveTaskCardProps {
   task: Task;
@@ -49,6 +50,9 @@ export function ActiveTaskCard({ task }: ActiveTaskCardProps) {
             <Button size="sm" variant={task.isRecording ? "destructive" : "outline"} onClick={() => task.isRecording ? stopRecording(task.taskId) : startRecording(task.taskId)}>
               <Circle className={cn("w-4 h-4 mr-1", task.isRecording && "fill-current")} />{task.isRecording ? 'Stop Rec' : 'Record'}
             </Button>
+            {(task.mediaType === 'chat' || task.mediaType === 'email') && (
+              <VideoEscalationButton taskId={task.taskId} />
+            )}
             <Button size="sm" variant="destructive" onClick={() => endTask(task.taskId)}>
               <PhoneOff className="w-4 h-4 mr-1" />End
             </Button>
