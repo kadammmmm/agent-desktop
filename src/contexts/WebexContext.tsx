@@ -93,6 +93,7 @@ interface WebexContextType {
   updateCADVariable: (taskId: string, key: string, value: string) => Promise<void>;
   addCustomerNote: (note: string) => Promise<void>;
   toggleFavoriteAgent: (agentId: string) => void;
+  escalateToVideo: (taskId: string) => Promise<void>;
   
   // Demo-specific actions
   triggerIncomingTask: (mediaType: ChannelType, queueId?: string) => void;
@@ -1134,6 +1135,67 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     ));
   }, []);
 
+  // Escalate to video - creates Instant Connect meeting
+  const escalateToVideo = useCallback(async (taskId: string) => {
+    const task = activeTasks.find(t => t.taskId === taskId);
+    if (!task) {
+      console.error('[WebexCC] Task not found for video escalation:', taskId);
+      throw new Error('Task not found');
+    }
+
+    console.log('[WebexCC] Escalating to video:', taskId, 'Demo mode:', runningInDemoMode);
+
+    if (runningInDemoMode) {
+      // Demo mode - simulate video escalation
+      const demoHostUrl = `https://instant.webex.com/demo-host-${taskId}`;
+      const demoGuestUrl = `https://instant.webex.com/demo-guest-${taskId}`;
+      
+      console.log('[WebexCC Demo] Video meeting created:', { hostUrl: demoHostUrl, guestUrl: demoGuestUrl });
+      
+      // Open demo host URL in new tab
+      window.open(demoHostUrl, '_blank');
+      
+      // Log that guest link would be sent
+      console.log('[WebexCC Demo] Guest link would be sent to customer:', demoGuestUrl);
+      
+      return;
+    }
+
+    // Production mode - call edge function
+    try {
+      const response = await fetch('/functions/v1/create-video-meeting', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          taskId,
+          customerName: task.customerName || 'Customer',
+          agentName: agentProfile?.name || 'Agent',
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to create video meeting');
+      }
+
+      const data = await response.json();
+      console.log('[WebexCC] Video meeting created:', data);
+
+      // Open host URL for agent
+      if (data.hostUrl) {
+        window.open(data.hostUrl, '_blank');
+      }
+
+      // Send guest link to customer via chat
+      if (data.guestUrl && task.mediaType === 'chat') {
+        await sendChatMessage(taskId, `Join the video call: ${data.guestUrl}`);
+      }
+    } catch (error) {
+      console.error('[WebexCC] Video escalation failed:', error);
+      throw error;
+    }
+  }, [activeTasks, runningInDemoMode, agentProfile?.name, sendChatMessage]);
+
   // Demo: Trigger incoming task manually
   const triggerIncomingTask = useCallback((mediaType: ChannelType, queueId?: string) => {
     if (!runningInDemoMode) {
@@ -1299,6 +1361,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     updateCADVariable,
     addCustomerNote,
     toggleFavoriteAgent,
+    escalateToVideo,
     triggerIncomingTask,
     applyCustomerScenario,
     triggerRONA,
