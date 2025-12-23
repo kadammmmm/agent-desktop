@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { CommandCenterSidebar } from './CommandCenterSidebar';
 import { ConversationsPanel } from './ConversationsPanel';
 import { InteractionArea } from './InteractionArea';
@@ -11,18 +11,37 @@ import { Customer360Enhanced } from './enhanced-panels/Customer360Enhanced';
 import { TransferConsultPanel } from './panels/TransferConsultPanel';
 import { AgentMetricsDashboard } from './panels/AgentMetricsDashboard';
 import { SettingsPanel } from './panels/SettingsPanel';
+import { SDKDebugPanel } from './SDKDebugPanel';
 import { useWebex } from '@/contexts/WebexContext';
 import type { NavigationSection } from '@/types/webex';
-import { ChevronRight, ChevronLeft, PanelRightOpen, PanelRightClose } from 'lucide-react';
+import { ChevronRight, ChevronLeft, PanelRightOpen, PanelRightClose, Bug } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { cn } from '@/lib/utils';
 
 export function CommandCenterLayout() {
-  const { agentProfile } = useWebex();
+  const { agentProfile, sdkLogs, clearSDKLogs, exportSDKLogs } = useWebex();
   const [activeSection, setActiveSection] = useState<NavigationSection>('interactions');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showContextPanel, setShowContextPanel] = useState(true);
+  const [showDebugPanel, setShowDebugPanel] = useState(false);
+
+  // Keyboard shortcut for debug panel (Ctrl+Shift+D)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+        e.preventDefault();
+        setShowDebugPanel(prev => !prev);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  const handleCloseDebugPanel = useCallback(() => {
+    setShowDebugPanel(false);
+  }, []);
 
   // Render main content based on active section
   const renderMainContent = () => {
@@ -139,6 +158,25 @@ export function CommandCenterLayout() {
             {/* Queue Toggle */}
             <QueueToggle />
 
+            {/* Debug Panel Toggle */}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setShowDebugPanel(!showDebugPanel)}
+              className={cn(
+                "relative",
+                showDebugPanel && "bg-primary/10 text-primary"
+              )}
+              title="Toggle SDK Debug Panel (Ctrl+Shift+D)"
+            >
+              <Bug className="h-5 w-5" />
+              {sdkLogs.filter(l => l.level === 'error').length > 0 && (
+                <span className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-destructive text-destructive-foreground text-xs flex items-center justify-center">
+                  {sdkLogs.filter(l => l.level === 'error').length}
+                </span>
+              )}
+            </Button>
+
             {/* Context Panel Toggle - only for interactions view */}
             {showContextToggle && (
               <Button
@@ -168,6 +206,16 @@ export function CommandCenterLayout() {
       
       {/* Demo Control Panel - floating */}
       <DemoControlPanel />
+
+      {/* SDK Debug Panel */}
+      {showDebugPanel && (
+        <SDKDebugPanel
+          logs={sdkLogs}
+          onClearLogs={clearSDKLogs}
+          onExportLogs={exportSDKLogs}
+          onClose={handleCloseDebugPanel}
+        />
+      )}
     </div>
   );
 }

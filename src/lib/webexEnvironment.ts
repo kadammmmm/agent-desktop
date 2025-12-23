@@ -1,10 +1,18 @@
 // Environment detection for Webex Contact Center integration
+import type { EnvironmentDiagnostics } from '@/types/sdk-debug';
 
 /**
  * Detects if the widget is running inside the Webex CC Agent Desktop
  */
 export function isRunningInAgentDesktop(): boolean {
   try {
+    // Check for Desktop SDK availability (most reliable check)
+    const hasDesktopSDK = typeof (window as any).Desktop !== 'undefined' ||
+                          typeof (window as any).wxcc !== 'undefined' ||
+                          typeof (window as any).WxCC !== 'undefined';
+    
+    if (hasDesktopSDK) return true;
+    
     // Check if we're in an iframe embedded in Agent Desktop
     if (window.parent === window) return false;
     
@@ -14,10 +22,7 @@ export function isRunningInAgentDesktop(): boolean {
                           referrer.includes('wxcc') || 
                           referrer.includes('cjp.cisco.com');
     
-    // Check for Desktop SDK availability
-    const hasDesktopSDK = typeof (window as any).wxcc !== 'undefined';
-    
-    return isWebexDomain || hasDesktopSDK;
+    return isWebexDomain;
   } catch {
     // Cross-origin restrictions might prevent checking
     return false;
@@ -76,4 +81,35 @@ export function isDemoMode(): boolean {
   
   // Default to demo mode if not running in Agent Desktop
   return !isRunningInAgentDesktop();
+}
+
+/**
+ * Get comprehensive environment diagnostics for debugging
+ */
+export function getEnvironmentDiagnostics(): EnvironmentDiagnostics {
+  let parentOrigin: string | null = null;
+  
+  try {
+    // Try to get parent origin (may fail due to cross-origin)
+    if (window.parent !== window) {
+      parentOrigin = window.parent.location.origin;
+    }
+  } catch {
+    parentOrigin = '[cross-origin - blocked]';
+  }
+  
+  return {
+    isIframe: window.parent !== window,
+    parentOrigin,
+    documentReferrer: document.referrer || '[none]',
+    currentUrl: window.location.href,
+    hostname: window.location.hostname,
+    hasDesktopSDK: typeof (window as any).Desktop !== 'undefined',
+    hasWxccGlobal: typeof (window as any).wxcc !== 'undefined' || typeof (window as any).WxCC !== 'undefined',
+    detectedRegion: getWebexRegion(),
+    isDemoMode: isDemoMode(),
+    isRunningInAgentDesktop: isRunningInAgentDesktop(),
+    userAgent: navigator.userAgent,
+    timestamp: Date.now(),
+  };
 }
