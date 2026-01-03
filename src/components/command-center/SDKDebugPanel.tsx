@@ -134,6 +134,8 @@ export function SDKDebugPanel({ logs, onClearLogs, onExportLogs, onClose }: SDKD
                 </DiagnosticSection>
 
                 <DiagnosticSection title="SDK Detection">
+                  <DiagnosticRow label="Has AGENTX_SERVICE" value={diagnostics.hasAgentXService ? 'Yes' : 'No'}
+                    status={diagnostics.hasAgentXService ? 'success' : 'warn'} />
                   <DiagnosticRow label="Has Desktop SDK (window.Desktop)" value={diagnostics.hasDesktopSDK ? 'Yes' : 'No'}
                     status={diagnostics.hasDesktopSDK ? 'success' : 'warn'} />
                   <DiagnosticRow label="Has wxcc Global" value={diagnostics.hasWxccGlobal ? 'Yes' : 'No'}

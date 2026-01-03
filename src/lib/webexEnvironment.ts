@@ -6,12 +6,15 @@ import type { EnvironmentDiagnostics } from '@/types/sdk-debug';
  */
 export function isRunningInAgentDesktop(): boolean {
   try {
-    // Check for Desktop SDK availability (most reliable check)
+    // Check for AGENTX_SERVICE (the actual global exposed by Agent Desktop)
+    const hasAgentXService = typeof (window as any).AGENTX_SERVICE !== 'undefined';
+    
+    // Check for Desktop SDK availability
     const hasDesktopSDK = typeof (window as any).Desktop !== 'undefined' ||
                           typeof (window as any).wxcc !== 'undefined' ||
                           typeof (window as any).WxCC !== 'undefined';
     
-    if (hasDesktopSDK) return true;
+    if (hasAgentXService || hasDesktopSDK) return true;
     
     // Check if we're in an iframe embedded in Agent Desktop
     if (window.parent === window) return false;
@@ -20,7 +23,8 @@ export function isRunningInAgentDesktop(): boolean {
     const referrer = document.referrer.toLowerCase();
     const isWebexDomain = referrer.includes('webex.com') || 
                           referrer.includes('wxcc') || 
-                          referrer.includes('cjp.cisco.com');
+                          referrer.includes('cjp.cisco.com') ||
+                          referrer.includes('ciscoccservice.com');
     
     return isWebexDomain;
   } catch {
@@ -106,6 +110,7 @@ export function getEnvironmentDiagnostics(): EnvironmentDiagnostics {
     hostname: window.location.hostname,
     hasDesktopSDK: typeof (window as any).Desktop !== 'undefined',
     hasWxccGlobal: typeof (window as any).wxcc !== 'undefined' || typeof (window as any).WxCC !== 'undefined',
+    hasAgentXService: typeof (window as any).AGENTX_SERVICE !== 'undefined',
     detectedRegion: getWebexRegion(),
     isDemoMode: isDemoMode(),
     isRunningInAgentDesktop: isRunningInAgentDesktop(),
