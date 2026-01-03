@@ -271,6 +271,12 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     const demoMode = isDemoMode();
     setRunningInDemoMode(demoMode);
     
+    // Log environment diagnostics for debugging
+    const diagnostics = getEnvironmentDiagnostics();
+    console.log('[WebexCC] Environment diagnostics:', diagnostics);
+    console.log('[WebexCC] AGENTX_SERVICE available:', typeof (window as any).AGENTX_SERVICE !== 'undefined');
+    console.log('[WebexCC] Demo mode detected:', demoMode);
+    
     try {
       if (demoMode) {
         // Demo mode: simulate SDK initialization and provide mock agent data

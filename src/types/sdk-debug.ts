@@ -19,6 +19,7 @@ export interface EnvironmentDiagnostics {
   hostname: string;
   hasDesktopSDK: boolean;
   hasWxccGlobal: boolean;
+  hasAgentXService: boolean;
   detectedRegion: string;
   isDemoMode: boolean;
   isRunningInAgentDesktop: boolean;
