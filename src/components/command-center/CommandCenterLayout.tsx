@@ -20,11 +20,18 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { cn } from '@/lib/utils';
 
 export function CommandCenterLayout() {
-  const { agentProfile, sdkLogs, clearSDKLogs, exportSDKLogs } = useWebex();
+  const { agentProfile, sdkLogs, clearSDKLogs, exportSDKLogs, initialize, isInitialized } = useWebex();
   const [activeSection, setActiveSection] = useState<NavigationSection>('interactions');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showContextPanel, setShowContextPanel] = useState(true);
   const [showDebugPanel, setShowDebugPanel] = useState(false);
+
+  // Initialize SDK on mount
+  useEffect(() => {
+    if (!isInitialized) {
+      initialize();
+    }
+  }, [initialize, isInitialized]);
 
   // Keyboard shortcut for debug panel (Ctrl+Shift+D)
   useEffect(() => {
