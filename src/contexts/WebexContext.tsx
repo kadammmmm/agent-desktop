@@ -548,8 +548,19 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
           
         } catch (sdkError) {
           const errorMessage = sdkError instanceof Error ? sdkError.message : String(sdkError);
-          addSDKLog('error', 'SDK config.init() threw error', { error: errorMessage, stack: (sdkError as Error)?.stack }, 'WebexContext');
-          console.error('[WebexCC] SDK config.init() error:', sdkError);
+          
+          // Check if this is an expected AI Assistant error (common when AI Assistant module is not enabled)
+          const isAiAssistantError = errorMessage.includes('aiAssistant');
+          
+          addSDKLog(
+            isAiAssistantError ? 'warn' : 'error', 
+            isAiAssistantError 
+              ? 'AI Assistant module not available - continuing in degraded mode (this is normal if AI Assistant is not enabled for this tenant)'
+              : 'SDK config.init() threw error', 
+            { error: errorMessage, stack: (sdkError as Error)?.stack }, 
+            'WebexContext'
+          );
+          console.warn('[WebexCC] SDK config.init() error (continuing in degraded mode):', sdkError);
           
           // Check if agentStateInfo is still available despite the config.init() error
           // The SDK may have partially initialized core modules before failing on optional ones (like AI Assistant)
@@ -888,6 +899,28 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     setActiveTasks(prev => [...prev.filter(t => t.taskId !== taskId), newTask]);
     setSelectedTaskId(taskId);
     setIncomingTask(null);
+    
+    // Set agent state to Engaged when contact is assigned
+    setAgentStateInfo(prev => prev ? { 
+      ...prev, 
+      state: 'Engaged',
+      lastStateChangeTime: Date.now()
+    } : null);
+    
+    // Populate customer profile from contact data
+    setCustomerProfile({
+      id: contact.customerId || taskId,
+      name: contact.customerName || contact.ani || contact.from || 'Unknown Customer',
+      email: contact.customerEmail || '',
+      phone: contact.ani || contact.from || '',
+      company: contact.company || '',
+      isVerified: contact.isVerified || false,
+      tags: [],
+      interactionHistory: [],
+      cadVariables: contact.cadVariables || {},
+    });
+    
+    addSDKLog('info', `Contact assigned - Agent state set to Engaged`, { taskId, ani: contact.ani }, 'WebexContext');
   };
   
   // Handle contact ended
@@ -899,8 +932,27 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       setActiveTasks(prev => prev.map(t => 
         t.taskId === taskId ? { ...t, state: 'wrapup' } : t
       ));
+      // Set agent state to WrapUp
+      setAgentStateInfo(prev => prev ? { 
+        ...prev, 
+        state: 'WrapUp',
+        lastStateChangeTime: Date.now()
+      } : null);
+      addSDKLog('info', `Contact ended - Agent state set to WrapUp`, { taskId }, 'WebexContext');
     } else {
-      setActiveTasks(prev => prev.filter(t => t.taskId !== taskId));
+      setActiveTasks(prev => {
+        const remaining = prev.filter(t => t.taskId !== taskId);
+        // Set agent state back to Available if no more tasks
+        if (remaining.length === 0) {
+          setAgentStateInfo(prevState => prevState ? { 
+            ...prevState, 
+            state: 'Available',
+            lastStateChangeTime: Date.now()
+          } : null);
+          addSDKLog('info', `Contact ended - No remaining tasks, Agent state set to Available`, { taskId }, 'WebexContext');
+        }
+        return remaining;
+      });
       if (selectedTaskId === taskId) {
         setSelectedTaskId(activeTasks.find(t => t.taskId !== taskId)?.taskId || null);
       }
@@ -910,7 +962,19 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   // Handle contact wrapped up
   const handleContactWrappedUp = (contact: any) => {
     const taskId = contact.interactionId || contact.id;
-    setActiveTasks(prev => prev.filter(t => t.taskId !== taskId));
+    setActiveTasks(prev => {
+      const remaining = prev.filter(t => t.taskId !== taskId);
+      // Set agent state back to Available if no more tasks
+      if (remaining.length === 0) {
+        setAgentStateInfo(prevState => prevState ? { 
+          ...prevState, 
+          state: 'Available',
+          lastStateChangeTime: Date.now()
+        } : null);
+        addSDKLog('info', `Contact wrapped up - No remaining tasks, Agent state set to Available`, { taskId }, 'WebexContext');
+      }
+      return remaining;
+    });
     if (selectedTaskId === taskId) {
       setSelectedTaskId(activeTasks.find(t => t.taskId !== taskId)?.taskId || null);
     }
