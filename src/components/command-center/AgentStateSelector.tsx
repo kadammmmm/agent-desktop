@@ -150,15 +150,21 @@ export function AgentStateSelector({ collapsed }: AgentStateSelectorProps) {
             <div className="state-indicator state-idle mr-2" />
             Idle
           </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent>
-            {idleCodes.map(code => (
-              <DropdownMenuItem 
-                key={code.id}
-                onClick={() => handleStateChange('Idle', code.id)}
-              >
-                {code.name}
+        <DropdownMenuSubContent>
+            {idleCodes.length === 0 ? (
+              <DropdownMenuItem disabled className="text-muted-foreground text-xs">
+                No idle codes available
               </DropdownMenuItem>
-            ))}
+            ) : (
+              idleCodes.map(code => (
+                <DropdownMenuItem 
+                  key={code.id}
+                  onClick={() => handleStateChange('Idle', code.id)}
+                >
+                  {code.name}
+                </DropdownMenuItem>
+              ))
+            )}
           </DropdownMenuSubContent>
         </DropdownMenuSub>
 

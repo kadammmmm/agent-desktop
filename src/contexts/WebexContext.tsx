@@ -504,6 +504,21 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
               status: mappedState,
             }, 'WebexContext');
             
+            // Fetch idle codes in degraded mode
+            try {
+              addSDKLog('info', 'Fetching idle codes in degraded mode...', null, 'WebexContext');
+              const sdkIdleCodes = await desktopRef.current.actions?.getIdleCodes();
+              if (sdkIdleCodes && Array.isArray(sdkIdleCodes)) {
+                setIdleCodes(sdkIdleCodes.map((code: any) => ({
+                  id: code.id,
+                  name: code.name,
+                })));
+                addSDKLog('info', `Loaded ${sdkIdleCodes.length} idle codes in degraded mode`, null, 'WebexContext');
+              }
+            } catch (e) {
+              addSDKLog('warn', 'Could not fetch idle codes in degraded mode', e, 'WebexContext');
+            }
+            
             // Set up event listener for state updates even in degraded mode
             try {
               desktopRef.current.agentStateInfo.addEventListener('updated', (changes: any) => {
@@ -706,12 +721,26 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
         addSDKLog('info', `Requesting state change: ${state}`, { idleCodeId }, 'WebexContext');
         
         // The SDK only supports Available and Idle via stateChange
-        if (state === 'Available' || state === 'Idle') {
+        if (state === 'Idle') {
+          // Idle state REQUIRES a valid auxCodeId
+          if (!idleCodeId || idleCodeId.trim() === '') {
+            addSDKLog('error', 'Cannot change to Idle state without a valid idle code', null, 'WebexContext');
+            console.error('[WebexCC] Idle state requires a valid auxCodeId');
+            return;
+          }
           await desktopRef.current.agentStateInfo.stateChange({
-            state: state,
-            auxCodeIdArray: idleCodeId || '',
+            state: 'Idle',
+            auxCodeIdArray: idleCodeId,
           });
-          addSDKLog('info', `State change request sent: ${state}`, null, 'WebexContext');
+          addSDKLog('info', `State change request sent: Idle with code ${idleCodeId}`, null, 'WebexContext');
+        } else if (state === 'Available') {
+          // Available state - pass current aux code if available, otherwise empty
+          const currentAuxCode = agentState?.idleCode?.id || '';
+          await desktopRef.current.agentStateInfo.stateChange({
+            state: 'Available',
+            auxCodeIdArray: currentAuxCode,
+          });
+          addSDKLog('info', `State change request sent: Available`, null, 'WebexContext');
         } else {
           // For other states (Offline, etc), log a warning - these may need different SDK calls
           addSDKLog('warn', `State ${state} not directly settable via stateChange API`, null, 'WebexContext');
