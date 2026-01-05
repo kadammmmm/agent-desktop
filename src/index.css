@@ -5,7 +5,7 @@
 /* Webex Momentum-inspired Design System with modern enhancements */
 
 @layer base {
-  :root {
+  :root, :host {
     /* b+s Brand Colors */
     --bs-navy: 244 40% 18%;
     --bs-purple: 270 45% 22%;
@@ -90,7 +90,7 @@
     --glass-border: 0 0% 100% / 0.2;
   }
 
-  .dark {
+  .dark, :host(.dark) {
     /* Webex Momentum Colors - Dark Theme */
     --background: 220 25% 8%;
     --foreground: 210 20% 95%;
