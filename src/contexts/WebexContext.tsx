@@ -467,12 +467,106 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
           
         } catch (sdkError) {
           const errorMessage = sdkError instanceof Error ? sdkError.message : String(sdkError);
-          addSDKLog('error', 'SDK initialization failed', { error: errorMessage, stack: (sdkError as Error)?.stack }, 'WebexContext');
-          console.error('[WebexCC] SDK initialization failed:', sdkError);
-          setIsConnected(false);
-          setConnectionError(`SDK initialization failed: ${errorMessage}`);
-          // Don't fall back to demo mode silently - show the error
-          return;
+          addSDKLog('error', 'SDK config.init() threw error', { error: errorMessage, stack: (sdkError as Error)?.stack }, 'WebexContext');
+          console.error('[WebexCC] SDK config.init() error:', sdkError);
+          
+          // Check if agentStateInfo is still available despite the config.init() error
+          // The SDK may have partially initialized core modules before failing on optional ones (like AI Assistant)
+          const agentInfoAvailable = desktopRef.current?.agentStateInfo?.latestData;
+          
+          if (agentInfoAvailable) {
+            addSDKLog('warn', 'SDK init threw error but agentStateInfo is available - continuing with degraded mode', null, 'WebexContext');
+            console.warn('[WebexCC] Continuing with partial SDK functionality despite init error');
+            
+            // Load agent data from the available agentStateInfo
+            const agentInfo = agentInfoAvailable;
+            setAgentProfile({
+              agentId: agentInfo.agentId || agentInfo.agentProfileID || '',
+              name: agentInfo.agentName || agentInfo.agentId || 'Agent',
+              email: agentInfo.agentMailId || agentInfo.agentEmail || '',
+              teamId: agentInfo.teamId || '',
+              teamName: agentInfo.teamName || '',
+              siteId: agentInfo.siteId || '',
+              siteName: agentInfo.siteName || '',
+              extension: agentInfo.extension || '',
+              dialNumber: agentInfo.dn || '',
+            });
+            
+            const mappedState = mapSdkStateToAgentState(agentInfo.subStatus || agentInfo.status || 'Idle');
+            setAgentStateInfo({
+              state: mappedState,
+              idleCode: agentInfo.auxCodeId ? { id: agentInfo.auxCodeId, name: agentInfo.auxCodeName || '' } : undefined,
+              lastStateChangeTime: agentInfo.lastStateChangeTimestamp || Date.now(),
+            });
+            
+            addSDKLog('info', 'Agent data loaded in degraded mode', {
+              agentName: agentInfo.agentName,
+              status: mappedState,
+            }, 'WebexContext');
+            
+            // Set up event listener for state updates even in degraded mode
+            try {
+              desktopRef.current.agentStateInfo.addEventListener('updated', (changes: any) => {
+                addSDKLog('debug', 'Agent state updated event received (degraded mode)', changes, 'WebexContext');
+                const latestData = desktopRef.current?.agentStateInfo?.latestData;
+                if (latestData) {
+                  const newMappedState = mapSdkStateToAgentState(latestData.subStatus || latestData.status || 'Idle');
+                  setAgentStateInfo({
+                    state: newMappedState,
+                    idleCode: latestData.auxCodeId ? { id: latestData.auxCodeId, name: latestData.auxCodeName || '' } : undefined,
+                    lastStateChangeTime: latestData.lastStateChangeTimestamp || Date.now(),
+                  });
+                }
+              });
+            } catch (listenerError) {
+              addSDKLog('warn', 'Could not set up state change listener in degraded mode', listenerError, 'WebexContext');
+            }
+            
+          } else if (desktopRef.current?.agentStateInfo) {
+            // agentStateInfo exists but latestData not ready - try polling
+            addSDKLog('info', 'agentStateInfo exists but latestData not ready - will poll', null, 'WebexContext');
+            
+            let agentInfo = null;
+            let attempts = 0;
+            const maxAttempts = 20;
+            
+            while (!agentInfo && attempts < maxAttempts) {
+              await new Promise(resolve => setTimeout(resolve, 500));
+              agentInfo = desktopRef.current?.agentStateInfo?.latestData;
+              attempts++;
+            }
+            
+            if (agentInfo) {
+              addSDKLog('info', 'Agent data received after polling (degraded mode)', { agentName: agentInfo.agentName }, 'WebexContext');
+              setAgentProfile({
+                agentId: agentInfo.agentId || agentInfo.agentProfileID || '',
+                name: agentInfo.agentName || agentInfo.agentId || 'Agent',
+                email: agentInfo.agentMailId || agentInfo.agentEmail || '',
+                teamId: agentInfo.teamId || '',
+                teamName: agentInfo.teamName || '',
+                siteId: agentInfo.siteId || '',
+                siteName: agentInfo.siteName || '',
+                extension: agentInfo.extension || '',
+                dialNumber: agentInfo.dn || '',
+              });
+              
+              const mappedState = mapSdkStateToAgentState(agentInfo.subStatus || agentInfo.status || 'Idle');
+              setAgentStateInfo({
+                state: mappedState,
+                idleCode: agentInfo.auxCodeId ? { id: agentInfo.auxCodeId, name: agentInfo.auxCodeName || '' } : undefined,
+                lastStateChangeTime: agentInfo.lastStateChangeTimestamp || Date.now(),
+              });
+            } else {
+              setIsConnected(false);
+              setConnectionError(`SDK initialization failed and agent data not available: ${errorMessage}`);
+              return;
+            }
+          } else {
+            // Truly failed - no SDK access at all
+            setIsConnected(false);
+            setConnectionError(`SDK initialization failed: ${errorMessage}`);
+            return;
+          }
         }
       }
       

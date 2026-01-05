@@ -12,7 +12,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Button } from '@/components/ui/button';
-import { ChevronDown, Clock, Loader2 } from 'lucide-react';
+import { ChevronDown, Clock, Loader2, AlertCircle, RefreshCw } from 'lucide-react';
 import type { AgentState } from '@/types/webex';
 
 interface AgentStateSelectorProps {
@@ -29,8 +29,9 @@ const stateConfig: Record<AgentState, { label: string; className: string }> = {
 };
 
 export function AgentStateSelector({ collapsed }: AgentStateSelectorProps) {
-  const { agentState, agentProfile, idleCodes, setAgentState, isLoading } = useWebex();
+  const { agentState, agentProfile, idleCodes, setAgentState, isLoading, connectionError, initialize } = useWebex();
   const [displayTime, setDisplayTime] = useState('0:00');
+  const [isRetrying, setIsRetrying] = useState(false);
 
   // Update timer display every second
   useEffect(() => {
@@ -51,6 +52,46 @@ export function AgentStateSelector({ collapsed }: AgentStateSelectorProps) {
   const handleStateChange = async (state: AgentState, idleCodeId?: string) => {
     await setAgentState(state, idleCodeId);
   };
+
+  const handleRetry = async () => {
+    setIsRetrying(true);
+    try {
+      await initialize();
+    } finally {
+      setIsRetrying(false);
+    }
+  };
+
+  // Show error state if connection failed
+  if (connectionError) {
+    return (
+      <div className={cn(
+        "flex flex-col items-center gap-2 px-3 py-2",
+        collapsed && "justify-center px-2"
+      )}>
+        <AlertCircle className="w-4 h-4 text-destructive" />
+        {!collapsed && (
+          <>
+            <span className="text-xs text-destructive text-center line-clamp-2">{connectionError}</span>
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={handleRetry}
+              disabled={isRetrying}
+              className="text-xs h-7 px-2"
+            >
+              {isRetrying ? (
+                <Loader2 className="w-3 h-3 animate-spin mr-1" />
+              ) : (
+                <RefreshCw className="w-3 h-3 mr-1" />
+              )}
+              Retry
+            </Button>
+          </>
+        )}
+      </div>
+    );
+  }
 
   // Show loading state while SDK initializes
   if (isLoading || !agentProfile) {
