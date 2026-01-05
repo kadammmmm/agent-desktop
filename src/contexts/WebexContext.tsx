@@ -465,6 +465,47 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
           
           addSDKLog('info', 'SDK initialization complete - all event listeners registered', null, 'WebexContext');
           
+          // Hydrate current interactions from TaskMap (success mode)
+          try {
+            addSDKLog('info', 'Fetching TaskMap to hydrate existing contacts...', null, 'WebexContext');
+            const taskMap = await desktopRef.current.actions?.getTaskMap();
+            if (taskMap && typeof taskMap === 'object') {
+              const tasks = Object.values(taskMap) as any[];
+              addSDKLog('info', `Fetched TaskMap with ${tasks.length} tasks`, taskMap, 'WebexContext');
+              
+              const hydratedTasks: Task[] = tasks.map((contact: any) => ({
+                taskId: contact.interactionId || contact.id,
+                mediaType: mapMediaType(contact.mediaType),
+                mediaChannel: contact.mediaChannel || 'telephony',
+                state: mapContactState(contact.state || contact.status || 'connected'),
+                direction: contact.direction || 'inbound',
+                queueName: contact.queueName || 'Unknown Queue',
+                ani: contact.ani || contact.from || '',
+                dnis: contact.dnis || contact.to || '',
+                startTime: contact.startTimestamp || Date.now(),
+                isRecording: contact.isRecording || false,
+                isMuted: contact.isMuted || false,
+                isHeld: contact.isHeld || false,
+                wrapUpRequired: contact.wrapUpRequired !== false,
+                cadVariables: contact.cadVariables || {},
+                customerName: contact.customerName,
+                customerEmail: contact.customerEmail,
+                customerPhone: contact.ani,
+                mediaResourceId: contact.mediaResourceId,
+                isConsult: contact.isConsult || false,
+                isPostCallConsult: contact.isPostCallConsult || false,
+              }));
+              
+              if (hydratedTasks.length > 0) {
+                setActiveTasks(hydratedTasks);
+                setSelectedTaskId(hydratedTasks[0].taskId);
+                addSDKLog('info', `Hydrated ${hydratedTasks.length} active tasks from TaskMap`, null, 'WebexContext');
+              }
+            }
+          } catch (taskMapError) {
+            addSDKLog('warn', 'Could not fetch TaskMap', taskMapError, 'WebexContext');
+          }
+          
         } catch (sdkError) {
           const errorMessage = sdkError instanceof Error ? sdkError.message : String(sdkError);
           addSDKLog('error', 'SDK config.init() threw error', { error: errorMessage, stack: (sdkError as Error)?.stack }, 'WebexContext');
@@ -535,6 +576,114 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
               });
             } catch (listenerError) {
               addSDKLog('warn', 'Could not set up state change listener in degraded mode', listenerError, 'WebexContext');
+            }
+            
+            // Register agentContact event listeners in degraded mode (same as success mode)
+            try {
+              addSDKLog('info', 'Registering agentContact listeners in degraded mode...', null, 'WebexContext');
+              
+              // Remove any existing listeners first to avoid duplicates
+              desktopRef.current.agentContact.removeAllEventListeners();
+              
+              desktopRef.current.agentContact.addEventListener('eAgentOfferContact', (contact: any) => {
+                addSDKLog('info', 'Incoming contact offer (degraded mode)', contact, 'WebexContext');
+                handleIncomingContact(contact);
+              });
+              
+              desktopRef.current.agentContact.addEventListener('eAgentContactAssigned', (contact: any) => {
+                addSDKLog('info', 'Contact assigned (degraded mode)', contact, 'WebexContext');
+                handleContactAssigned(contact);
+              });
+              
+              desktopRef.current.agentContact.addEventListener('eAgentContactEnded', (contact: any) => {
+                addSDKLog('info', 'Contact ended (degraded mode)', contact, 'WebexContext');
+                handleContactEnded(contact);
+              });
+              
+              desktopRef.current.agentContact.addEventListener('eAgentContactWrappedUp', (contact: any) => {
+                addSDKLog('info', 'Contact wrapped up (degraded mode)', contact, 'WebexContext');
+                handleContactWrappedUp(contact);
+              });
+              
+              desktopRef.current.agentContact.addEventListener('eAgentWrapup', (contact: any) => {
+                addSDKLog('info', 'Agent wrapup state (degraded mode)', contact, 'WebexContext');
+                handleAgentWrapup(contact);
+              });
+              
+              desktopRef.current.agentContact.addEventListener('eAgentOfferContactRona', (contact: any) => {
+                addSDKLog('info', 'RONA event received (degraded mode)', contact, 'WebexContext');
+                setIncomingTask(null);
+                setAgentStateInfo(prev => prev ? { ...prev, state: 'RONA' } : null);
+              });
+              
+              desktopRef.current.agentContact.addEventListener('eAgentContactHeld', (contact: any) => {
+                addSDKLog('info', 'Contact held (degraded mode)', contact, 'WebexContext');
+                const taskId = contact.interactionId || contact.id;
+                setActiveTasks(prev => prev.map(t => 
+                  t.taskId === taskId ? { ...t, isHeld: true, state: 'held' } : t
+                ));
+              });
+              
+              desktopRef.current.agentContact.addEventListener('eAgentContactUnHeld', (contact: any) => {
+                addSDKLog('info', 'Contact unheld (degraded mode)', contact, 'WebexContext');
+                const taskId = contact.interactionId || contact.id;
+                setActiveTasks(prev => prev.map(t => 
+                  t.taskId === taskId ? { ...t, isHeld: false, state: 'connected' } : t
+                ));
+              });
+              
+              desktopRef.current.agentContact.addEventListener('eCallRecordingStarted', (contact: any) => {
+                addSDKLog('info', 'Recording started (degraded mode)', contact, 'WebexContext');
+                const taskId = contact.interactionId || contact.id;
+                setActiveTasks(prev => prev.map(t => 
+                  t.taskId === taskId ? { ...t, isRecording: true } : t
+                ));
+              });
+              
+              addSDKLog('info', 'AgentContact listeners registered (degraded mode)', null, 'WebexContext');
+            } catch (listenerError) {
+              addSDKLog('warn', 'Could not set up agentContact listeners in degraded mode', listenerError, 'WebexContext');
+            }
+            
+            // Hydrate current interactions from TaskMap
+            try {
+              addSDKLog('info', 'Fetching TaskMap to hydrate existing contacts...', null, 'WebexContext');
+              const taskMap = await desktopRef.current.actions?.getTaskMap();
+              if (taskMap && typeof taskMap === 'object') {
+                const tasks = Object.values(taskMap) as any[];
+                addSDKLog('info', `Fetched TaskMap with ${tasks.length} tasks`, taskMap, 'WebexContext');
+                
+                const hydratedTasks: Task[] = tasks.map((contact: any) => ({
+                  taskId: contact.interactionId || contact.id,
+                  mediaType: mapMediaType(contact.mediaType),
+                  mediaChannel: contact.mediaChannel || 'telephony',
+                  state: mapContactState(contact.state || contact.status || 'connected'),
+                  direction: contact.direction || 'inbound',
+                  queueName: contact.queueName || 'Unknown Queue',
+                  ani: contact.ani || contact.from || '',
+                  dnis: contact.dnis || contact.to || '',
+                  startTime: contact.startTimestamp || Date.now(),
+                  isRecording: contact.isRecording || false,
+                  isMuted: contact.isMuted || false,
+                  isHeld: contact.isHeld || false,
+                  wrapUpRequired: contact.wrapUpRequired !== false,
+                  cadVariables: contact.cadVariables || {},
+                  customerName: contact.customerName,
+                  customerEmail: contact.customerEmail,
+                  customerPhone: contact.ani,
+                  mediaResourceId: contact.mediaResourceId,
+                  isConsult: contact.isConsult || false,
+                  isPostCallConsult: contact.isPostCallConsult || false,
+                }));
+                
+                if (hydratedTasks.length > 0) {
+                  setActiveTasks(hydratedTasks);
+                  setSelectedTaskId(hydratedTasks[0].taskId);
+                  addSDKLog('info', `Hydrated ${hydratedTasks.length} active tasks from TaskMap`, null, 'WebexContext');
+                }
+              }
+            } catch (taskMapError) {
+              addSDKLog('warn', 'Could not fetch TaskMap in degraded mode', taskMapError, 'WebexContext');
             }
             
           } else if (desktopRef.current?.agentStateInfo) {
@@ -658,6 +807,10 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       customerName: contact.customerName,
       customerEmail: contact.customerEmail,
       customerPhone: contact.ani,
+      // SDK-specific fields for call controls
+      mediaResourceId: contact.mediaResourceId,
+      isConsult: contact.isConsult || false,
+      isPostCallConsult: contact.isPostCallConsult || false,
     };
     
     setActiveTasks(prev => [...prev.filter(t => t.taskId !== taskId), newTask]);
@@ -710,6 +863,21 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       'social': 'social',
     };
     return typeMap[sdkMediaType?.toLowerCase()] || 'voice';
+  };
+  
+  // Map SDK contact state to our Task state
+  const mapContactState = (sdkState: string): Task['state'] => {
+    const stateMap: Record<string, Task['state']> = {
+      'connected': 'connected',
+      'held': 'held',
+      'wrapup': 'wrapup',
+      'consulting': 'consulting',
+      'conferencing': 'conferencing',
+      'incoming': 'incoming',
+      'ringing': 'incoming',
+      'offered': 'incoming',
+    };
+    return stateMap[sdkState?.toLowerCase()] || 'connected';
   };
 
   // Set agent state
@@ -852,7 +1020,15 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     try {
       if (!runningInDemoMode && desktopRef.current) {
         console.log('[WebexCC] Declining task via SDK:', taskId);
-        await desktopRef.current.agentContact.decline({ interactionId: taskId });
+        // SDK requires mediaResourceId and isConsult for decline
+        const task = activeTasks.find(t => t.taskId === taskId);
+        await desktopRef.current.agentContact.decline({ 
+          interactionId: taskId,
+          data: {
+            mediaResourceId: task?.mediaResourceId || '',
+          },
+          isConsult: task?.isConsult || false,
+        });
       }
     } catch (error) {
       console.error('[WebexCC] Decline task failed:', error);
@@ -860,14 +1036,21 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     
     setIncomingTask(null);
     console.log('[WebexCC] Task declined:', taskId);
-  }, [runningInDemoMode]);
+  }, [runningInDemoMode, activeTasks]);
 
   // Hold task
   const holdTask = useCallback(async (taskId: string) => {
     try {
       if (!runningInDemoMode && desktopRef.current) {
         console.log('[WebexCC] Holding task via SDK:', taskId);
-        await desktopRef.current.agentContact.hold({ interactionId: taskId });
+        const task = activeTasks.find(t => t.taskId === taskId);
+        await desktopRef.current.agentContact.hold({ 
+          interactionId: taskId,
+          data: {
+            mediaResourceId: task?.mediaResourceId || '',
+          },
+          isPostCallConsult: task?.isPostCallConsult || false,
+        });
       }
     } catch (error) {
       console.error('[WebexCC] Hold task failed:', error);
@@ -877,14 +1060,22 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       t.taskId === taskId ? { ...t, isHeld: true, state: 'held' } : t
     ));
     console.log('[WebexCC] Task held:', taskId);
-  }, [runningInDemoMode]);
+  }, [runningInDemoMode, activeTasks]);
 
   // Resume task
   const resumeTask = useCallback(async (taskId: string) => {
     try {
       if (!runningInDemoMode && desktopRef.current) {
         console.log('[WebexCC] Resuming task via SDK:', taskId);
-        await desktopRef.current.agentContact.unhold({ interactionId: taskId });
+        const task = activeTasks.find(t => t.taskId === taskId);
+        // SDK uses unHold (capital H) not unhold
+        await desktopRef.current.agentContact.unHold({ 
+          interactionId: taskId,
+          data: {
+            mediaResourceId: task?.mediaResourceId || '',
+          },
+          isPostCallConsult: task?.isPostCallConsult || false,
+        });
       }
     } catch (error) {
       console.error('[WebexCC] Resume task failed:', error);
@@ -894,7 +1085,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       t.taskId === taskId ? { ...t, isHeld: false, state: 'connected' } : t
     ));
     console.log('[WebexCC] Task resumed:', taskId);
-  }, [runningInDemoMode]);
+  }, [runningInDemoMode, activeTasks]);
 
   // Mute task
   const muteTask = useCallback(async (taskId: string) => {
