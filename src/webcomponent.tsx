@@ -22,6 +22,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { DemoProvider } from './contexts/DemoContext';
 import { ThemeProvider } from './contexts/ThemeContext';
+import { PortalContainerProvider } from './contexts/PortalContainerContext';
 import { CommandCenter } from './components/command-center';
 import { Toaster } from './components/ui/sonner';
 
@@ -108,14 +109,16 @@ function BSAgentDesktopApp({ targetElement }: BSAgentDesktopAppProps) {
     <React.StrictMode>
       <ErrorBoundary>
         <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <ThemeProvider targetElement={targetElement}>
-              <DemoProvider>
-                <CommandCenter />
-                <Toaster />
-              </DemoProvider>
-            </ThemeProvider>
-          </TooltipProvider>
+          <PortalContainerProvider container={targetElement}>
+            <TooltipProvider>
+              <ThemeProvider targetElement={targetElement}>
+                <DemoProvider>
+                  <CommandCenter />
+                  <Toaster />
+                </DemoProvider>
+              </ThemeProvider>
+            </TooltipProvider>
+          </PortalContainerProvider>
         </QueryClientProvider>
       </ErrorBoundary>
     </React.StrictMode>
