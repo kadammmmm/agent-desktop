@@ -50,6 +50,10 @@ export interface Task {
   customerName?: string;
   customerEmail?: string;
   customerPhone?: string;
+  // SDK-specific fields required for call controls
+  mediaResourceId?: string;
+  isConsult?: boolean;
+  isPostCallConsult?: boolean;
 }
 
 export interface IncomingTask {
