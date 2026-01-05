@@ -29,7 +29,7 @@ const stateConfig: Record<AgentState, { label: string; className: string }> = {
 };
 
 export function AgentStateSelector({ collapsed }: AgentStateSelectorProps) {
-  const { agentState, agentProfile, idleCodes, setAgentState, isLoading, connectionError, initialize } = useWebex();
+  const { agentState, agentProfile, idleCodes, setAgentState, isLoading, connectionError, initialize, isDemoMode } = useWebex();
   const [displayTime, setDisplayTime] = useState('0:00');
   const [isRetrying, setIsRetrying] = useState(false);
 
@@ -108,6 +108,10 @@ export function AgentStateSelector({ collapsed }: AgentStateSelectorProps) {
 
   const currentState = agentState?.state || 'Offline';
   const config = stateConfig[currentState];
+  
+  // Check if idle codes are properly loaded (in production, they should be UUIDs)
+  const hasValidIdleCodes = idleCodes.length > 0;
+  const isLoadingIdleCodes = !isDemoMode && idleCodes.length === 0;
 
   return (
     <DropdownMenu>
@@ -146,12 +150,18 @@ export function AgentStateSelector({ collapsed }: AgentStateSelectorProps) {
         </DropdownMenuItem>
         
         <DropdownMenuSub>
-          <DropdownMenuSubTrigger>
+          <DropdownMenuSubTrigger disabled={isLoadingIdleCodes}>
             <div className="state-indicator state-idle mr-2" />
             Idle
+            {isLoadingIdleCodes && <Loader2 className="w-3 h-3 animate-spin ml-auto" />}
           </DropdownMenuSubTrigger>
-        <DropdownMenuSubContent>
-            {idleCodes.length === 0 ? (
+          <DropdownMenuSubContent>
+            {isLoadingIdleCodes ? (
+              <DropdownMenuItem disabled className="text-muted-foreground text-xs">
+                <Loader2 className="w-3 h-3 animate-spin mr-2" />
+                Loading idle codes...
+              </DropdownMenuItem>
+            ) : !hasValidIdleCodes ? (
               <DropdownMenuItem disabled className="text-muted-foreground text-xs">
                 No idle codes available
               </DropdownMenuItem>

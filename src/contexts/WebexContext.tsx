@@ -197,11 +197,12 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   const [incomingTask, setIncomingTask] = useState<IncomingTask | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   
-  const [idleCodes, setIdleCodes] = useState<IdleCode[]>(mockIdleCodes);
-  const [wrapUpCodes, setWrapUpCodes] = useState<WrapUpCode[]>(mockWrapUpCodes);
-  const [queues, setQueues] = useState<Queue[]>(mockQueues);
-  const [teamAgents, setTeamAgents] = useState<TeamAgent[]>(mockTeamAgents);
-  const [entryPoints, setEntryPoints] = useState<EntryPoint[]>(mockEntryPoints);
+  // Initialize reference data to empty arrays in production, mock data set in initialize() for demo mode only
+  const [idleCodes, setIdleCodes] = useState<IdleCode[]>([]);
+  const [wrapUpCodes, setWrapUpCodes] = useState<WrapUpCode[]>([]);
+  const [queues, setQueues] = useState<Queue[]>([]);
+  const [teamAgents, setTeamAgents] = useState<TeamAgent[]>([]);
+  const [entryPoints, setEntryPoints] = useState<EntryPoint[]>([]);
   
   const [agentMetrics, setAgentMetrics] = useState<AgentMetrics | null>(null);
   const [extendedMetrics, setExtendedMetrics] = useState<ExtendedMetrics | null>(null);
@@ -283,6 +284,13 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
         console.log('[WebexCC] Running in DEMO mode - not embedded in Agent Desktop');
         await new Promise(resolve => setTimeout(resolve, 1000));
         
+        // Set mock reference data ONLY in demo mode
+        setIdleCodes(mockIdleCodes);
+        setWrapUpCodes(mockWrapUpCodes);
+        setQueues(mockQueues);
+        setTeamAgents(mockTeamAgents);
+        setEntryPoints(mockEntryPoints);
+        
         // Auto-populate agent profile (agent is already logged in via Webex CC)
         setAgentProfile({
           agentId: 'agent-001',
@@ -333,25 +341,26 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
           addSDKLog('info', 'Desktop.config.init() completed', null, 'WebexContext');
           console.log('[WebexCC] SDK config initialized successfully');
           
-          // Wait for agent data to become available (poll for up to 10 seconds)
+          // Wait for agent data to become fully available (poll for up to 10 seconds)
           let agentInfo = desktopRef.current.agentStateInfo?.latestData;
           let attempts = 0;
           const maxAttempts = 20; // 20 * 500ms = 10 seconds
           
-          while (!agentInfo && attempts < maxAttempts) {
+          while (!isAgentInfoReady(agentInfo) && attempts < maxAttempts) {
             addSDKLog('debug', `Waiting for agent data... attempt ${attempts + 1}/${maxAttempts}`, null, 'WebexContext');
             await new Promise(resolve => setTimeout(resolve, 500));
             agentInfo = desktopRef.current.agentStateInfo?.latestData;
             attempts++;
           }
           
-          if (agentInfo) {
+          if (isAgentInfoReady(agentInfo)) {
             addSDKLog('info', 'Agent data received from SDK', {
               agentName: agentInfo.agentName,
               status: agentInfo.status,
               subStatus: agentInfo.subStatus,
               dn: agentInfo.dn,
               teamName: agentInfo.teamName,
+              idleCodesCount: agentInfo.idleCodes?.length,
             }, 'WebexContext');
             
             setAgentProfile({
@@ -370,14 +379,31 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
             const mappedState = mapSdkStateToAgentState(agentInfo.subStatus || agentInfo.status || 'Idle');
             setAgentStateInfo({
               state: mappedState,
-              idleCode: agentInfo.auxCodeId ? { id: agentInfo.auxCodeId, name: agentInfo.auxCodeName || '' } : undefined,
+              idleCode: agentInfo.idleCode || (agentInfo.auxCodeId ? { id: agentInfo.auxCodeId, name: agentInfo.auxCodeName || '' } : undefined),
               lastStateChangeTime: agentInfo.lastStateChangeTimestamp || Date.now(),
             });
             
+            // Source idleCodes and wrapUpCodes from latestData if available
+            if (agentInfo.idleCodes && Array.isArray(agentInfo.idleCodes) && agentInfo.idleCodes.length > 0) {
+              setIdleCodes(agentInfo.idleCodes.map((code: any) => ({
+                id: code.id,
+                name: code.name,
+              })));
+              addSDKLog('info', `Loaded ${agentInfo.idleCodes.length} idle codes from latestData`, null, 'WebexContext');
+            }
+            
+            if (agentInfo.wrapupCodes && Array.isArray(agentInfo.wrapupCodes) && agentInfo.wrapupCodes.length > 0) {
+              setWrapUpCodes(agentInfo.wrapupCodes.map((code: any) => ({
+                id: code.id,
+                name: code.name,
+              })));
+              addSDKLog('info', `Loaded ${agentInfo.wrapupCodes.length} wrap-up codes from latestData`, null, 'WebexContext');
+            }
+            
             console.log('[WebexCC] Agent info loaded:', agentInfo.agentName, 'State:', mappedState);
           } else {
-            addSDKLog('warn', 'Agent data not available after waiting', null, 'WebexContext');
-            console.warn('[WebexCC] Agent data not available after 10 seconds');
+            addSDKLog('warn', 'Agent data not ready after waiting', null, 'WebexContext');
+            console.warn('[WebexCC] Agent data not ready after 10 seconds');
             setConnectionError('Agent data not available - please ensure you are logged in');
           }
           
@@ -387,16 +413,30 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
             addSDKLog('debug', 'Agent state updated event received', changes, 'WebexContext');
             console.log('[WebexCC] Agent state update event:', changes);
             
-            // Re-read the full latestData to get complete state
+            // Re-read the full latestData to get complete state and sync config
             const latestData = desktopRef.current?.agentStateInfo?.latestData;
             if (latestData) {
               const mappedState = mapSdkStateToAgentState(latestData.subStatus || latestData.status || 'Idle');
               setAgentStateInfo({
                 state: mappedState,
-                idleCode: latestData.auxCodeId ? { id: latestData.auxCodeId, name: latestData.auxCodeName || '' } : undefined,
+                idleCode: latestData.idleCode || (latestData.auxCodeId ? { id: latestData.auxCodeId, name: latestData.auxCodeName || '' } : undefined),
                 lastStateChangeTime: latestData.lastStateChangeTimestamp || Date.now(),
               });
               addSDKLog('info', `Agent state changed to: ${mappedState}`, { status: latestData.status, subStatus: latestData.subStatus }, 'WebexContext');
+              
+              // Also sync idleCodes and wrapUpCodes if they've been populated
+              if (latestData.idleCodes && Array.isArray(latestData.idleCodes) && latestData.idleCodes.length > 0) {
+                setIdleCodes(latestData.idleCodes.map((code: any) => ({
+                  id: code.id,
+                  name: code.name,
+                })));
+              }
+              if (latestData.wrapupCodes && Array.isArray(latestData.wrapupCodes) && latestData.wrapupCodes.length > 0) {
+                setWrapUpCodes(latestData.wrapupCodes.map((code: any) => ({
+                  id: code.id,
+                  name: code.name,
+                })));
+              }
             }
           });
           
@@ -513,14 +553,25 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
           
           // Check if agentStateInfo is still available despite the config.init() error
           // The SDK may have partially initialized core modules before failing on optional ones (like AI Assistant)
-          const agentInfoAvailable = desktopRef.current?.agentStateInfo?.latestData;
+          let agentInfo = desktopRef.current?.agentStateInfo?.latestData;
           
-          if (agentInfoAvailable) {
+          // Poll for agent info readiness in degraded mode too
+          if (!isAgentInfoReady(agentInfo)) {
+            addSDKLog('info', 'Agent data not ready yet in degraded mode, polling...', null, 'WebexContext');
+            let attempts = 0;
+            const maxAttempts = 20;
+            while (!isAgentInfoReady(agentInfo) && attempts < maxAttempts) {
+              await new Promise(resolve => setTimeout(resolve, 500));
+              agentInfo = desktopRef.current?.agentStateInfo?.latestData;
+              attempts++;
+            }
+          }
+          
+          if (isAgentInfoReady(agentInfo)) {
             addSDKLog('warn', 'SDK init threw error but agentStateInfo is available - continuing with degraded mode', null, 'WebexContext');
             console.warn('[WebexCC] Continuing with partial SDK functionality despite init error');
             
             // Load agent data from the available agentStateInfo
-            const agentInfo = agentInfoAvailable;
             setAgentProfile({
               agentId: agentInfo.agentId || agentInfo.agentProfileID || '',
               name: agentInfo.agentName || agentInfo.agentId || 'Agent',
@@ -536,28 +587,51 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
             const mappedState = mapSdkStateToAgentState(agentInfo.subStatus || agentInfo.status || 'Idle');
             setAgentStateInfo({
               state: mappedState,
-              idleCode: agentInfo.auxCodeId ? { id: agentInfo.auxCodeId, name: agentInfo.auxCodeName || '' } : undefined,
+              idleCode: agentInfo.idleCode || (agentInfo.auxCodeId ? { id: agentInfo.auxCodeId, name: agentInfo.auxCodeName || '' } : undefined),
               lastStateChangeTime: agentInfo.lastStateChangeTimestamp || Date.now(),
             });
             
             addSDKLog('info', 'Agent data loaded in degraded mode', {
               agentName: agentInfo.agentName,
               status: mappedState,
+              idleCodesCount: agentInfo.idleCodes?.length,
             }, 'WebexContext');
             
-            // Fetch idle codes in degraded mode
-            try {
-              addSDKLog('info', 'Fetching idle codes in degraded mode...', null, 'WebexContext');
-              const sdkIdleCodes = await desktopRef.current.actions?.getIdleCodes();
-              if (sdkIdleCodes && Array.isArray(sdkIdleCodes)) {
-                setIdleCodes(sdkIdleCodes.map((code: any) => ({
-                  id: code.id,
-                  name: code.name,
-                })));
-                addSDKLog('info', `Loaded ${sdkIdleCodes.length} idle codes in degraded mode`, null, 'WebexContext');
+            // Source idleCodes from latestData first (most reliable), fallback to actions.getIdleCodes()
+            let idleCodesLoaded = false;
+            if (agentInfo.idleCodes && Array.isArray(agentInfo.idleCodes) && agentInfo.idleCodes.length > 0) {
+              setIdleCodes(agentInfo.idleCodes.map((code: any) => ({
+                id: code.id,
+                name: code.name,
+              })));
+              addSDKLog('info', `Loaded ${agentInfo.idleCodes.length} idle codes from latestData (degraded mode)`, null, 'WebexContext');
+              idleCodesLoaded = true;
+            }
+            
+            // Fallback to actions.getIdleCodes() if latestData didn't have them
+            if (!idleCodesLoaded) {
+              try {
+                addSDKLog('info', 'Fetching idle codes via actions in degraded mode...', null, 'WebexContext');
+                const sdkIdleCodes = await desktopRef.current.actions?.getIdleCodes();
+                if (sdkIdleCodes && Array.isArray(sdkIdleCodes) && sdkIdleCodes.length > 0) {
+                  setIdleCodes(sdkIdleCodes.map((code: any) => ({
+                    id: code.id,
+                    name: code.name,
+                  })));
+                  addSDKLog('info', `Loaded ${sdkIdleCodes.length} idle codes via actions (degraded mode)`, null, 'WebexContext');
+                }
+              } catch (e) {
+                addSDKLog('warn', 'Could not fetch idle codes via actions in degraded mode', e, 'WebexContext');
               }
-            } catch (e) {
-              addSDKLog('warn', 'Could not fetch idle codes in degraded mode', e, 'WebexContext');
+            }
+            
+            // Source wrapUpCodes from latestData
+            if (agentInfo.wrapupCodes && Array.isArray(agentInfo.wrapupCodes) && agentInfo.wrapupCodes.length > 0) {
+              setWrapUpCodes(agentInfo.wrapupCodes.map((code: any) => ({
+                id: code.id,
+                name: code.name,
+              })));
+              addSDKLog('info', `Loaded ${agentInfo.wrapupCodes.length} wrap-up codes from latestData (degraded mode)`, null, 'WebexContext');
             }
             
             // Set up event listener for state updates even in degraded mode
@@ -569,9 +643,23 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
                   const newMappedState = mapSdkStateToAgentState(latestData.subStatus || latestData.status || 'Idle');
                   setAgentStateInfo({
                     state: newMappedState,
-                    idleCode: latestData.auxCodeId ? { id: latestData.auxCodeId, name: latestData.auxCodeName || '' } : undefined,
+                    idleCode: latestData.idleCode || (latestData.auxCodeId ? { id: latestData.auxCodeId, name: latestData.auxCodeName || '' } : undefined),
                     lastStateChangeTime: latestData.lastStateChangeTimestamp || Date.now(),
                   });
+                  
+                  // Also sync idleCodes and wrapUpCodes on each update
+                  if (latestData.idleCodes && Array.isArray(latestData.idleCodes) && latestData.idleCodes.length > 0) {
+                    setIdleCodes(latestData.idleCodes.map((code: any) => ({
+                      id: code.id,
+                      name: code.name,
+                    })));
+                  }
+                  if (latestData.wrapupCodes && Array.isArray(latestData.wrapupCodes) && latestData.wrapupCodes.length > 0) {
+                    setWrapUpCodes(latestData.wrapupCodes.map((code: any) => ({
+                      id: code.id,
+                      name: code.name,
+                    })));
+                  }
                 }
               });
             } catch (listenerError) {
@@ -686,45 +774,6 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
               addSDKLog('warn', 'Could not fetch TaskMap in degraded mode', taskMapError, 'WebexContext');
             }
             
-          } else if (desktopRef.current?.agentStateInfo) {
-            // agentStateInfo exists but latestData not ready - try polling
-            addSDKLog('info', 'agentStateInfo exists but latestData not ready - will poll', null, 'WebexContext');
-            
-            let agentInfo = null;
-            let attempts = 0;
-            const maxAttempts = 20;
-            
-            while (!agentInfo && attempts < maxAttempts) {
-              await new Promise(resolve => setTimeout(resolve, 500));
-              agentInfo = desktopRef.current?.agentStateInfo?.latestData;
-              attempts++;
-            }
-            
-            if (agentInfo) {
-              addSDKLog('info', 'Agent data received after polling (degraded mode)', { agentName: agentInfo.agentName }, 'WebexContext');
-              setAgentProfile({
-                agentId: agentInfo.agentId || agentInfo.agentProfileID || '',
-                name: agentInfo.agentName || agentInfo.agentId || 'Agent',
-                email: agentInfo.agentMailId || agentInfo.agentEmail || '',
-                teamId: agentInfo.teamId || '',
-                teamName: agentInfo.teamName || '',
-                siteId: agentInfo.siteId || '',
-                siteName: agentInfo.siteName || '',
-                extension: agentInfo.extension || '',
-                dialNumber: agentInfo.dn || '',
-              });
-              
-              const mappedState = mapSdkStateToAgentState(agentInfo.subStatus || agentInfo.status || 'Idle');
-              setAgentStateInfo({
-                state: mappedState,
-                idleCode: agentInfo.auxCodeId ? { id: agentInfo.auxCodeId, name: agentInfo.auxCodeName || '' } : undefined,
-                lastStateChangeTime: agentInfo.lastStateChangeTimestamp || Date.now(),
-              });
-            } else {
-              setIsConnected(false);
-              setConnectionError(`SDK initialization failed and agent data not available: ${errorMessage}`);
-              return;
-            }
           } else {
             // Truly failed - no SDK access at all
             setIsConnected(false);
@@ -747,19 +796,42 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   
   // Map SDK state strings to our AgentState type
   // SDK uses status/subStatus - status is main state, subStatus provides more detail
+  // Handles both lowercase and uppercase variants for robustness
   const mapSdkStateToAgentState = (sdkState: string): AgentState => {
+    const normalized = sdkState?.toLowerCase() || '';
     const stateMap: Record<string, AgentState> = {
-      'Available': 'Available',
-      'Idle': 'Idle',
-      'RONA': 'RONA',
-      'Engaged': 'Engaged',
-      'WrapUp': 'WrapUp',
-      'Offline': 'Offline',
-      'LoggedIn': 'Idle', // LoggedIn with subStatus Idle
-      'LoggedOut': 'Offline',
-      'NotReady': 'Idle',
+      'available': 'Available',
+      'idle': 'Idle',
+      'rona': 'RONA',
+      'engaged': 'Engaged',
+      'wrapup': 'WrapUp',
+      'wrap-up': 'WrapUp',
+      'wrap_up': 'WrapUp',
+      'offline': 'Offline',
+      'loggedin': 'Idle', // LoggedIn with subStatus Idle
+      'logged_in': 'Idle',
+      'loggedout': 'Offline',
+      'logged_out': 'Offline',
+      'notready': 'Idle',
+      'not_ready': 'Idle',
     };
-    return stateMap[sdkState] || 'Offline';
+    return stateMap[normalized] || 'Offline';
+  };
+  
+  // Helper to validate if a string is a valid UUID format
+  const isValidUUID = (str: string): boolean => {
+    if (!str || typeof str !== 'string') return false;
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    return uuidRegex.test(str);
+  };
+  
+  // Helper to check if agent info is fully ready (not just truthy but with key fields)
+  const isAgentInfoReady = (agentInfo: any): boolean => {
+    if (!agentInfo) return false;
+    // Must have at least agentName or agentId, plus a status
+    const hasIdentity = !!(agentInfo.agentName || agentInfo.agentId || agentInfo.agentProfileID);
+    const hasStatus = !!(agentInfo.status || agentInfo.subStatus);
+    return hasIdentity && hasStatus;
   };
   
   // Handle incoming contact offer
@@ -890,10 +962,12 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
         
         // The SDK only supports Available and Idle via stateChange
         if (state === 'Idle') {
-          // Idle state REQUIRES a valid auxCodeId
-          if (!idleCodeId || idleCodeId.trim() === '') {
-            addSDKLog('error', 'Cannot change to Idle state without a valid idle code', null, 'WebexContext');
-            console.error('[WebexCC] Idle state requires a valid auxCodeId');
+          // Idle state REQUIRES a valid UUID auxCodeId
+          if (!idleCodeId || !isValidUUID(idleCodeId)) {
+            const errorMsg = `Cannot change to Idle state: invalid or missing idle code ID. Received: "${idleCodeId}". Ensure idle codes are loaded.`;
+            addSDKLog('error', errorMsg, { idleCodeId, idleCodesLoaded: idleCodes.length }, 'WebexContext');
+            console.error('[WebexCC]', errorMsg);
+            // Don't update local state - the request is invalid
             return;
           }
           await desktopRef.current.agentStateInfo.stateChange({
@@ -927,17 +1001,11 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       console.log('[WebexCC] State change requested:', state, idleCodeId);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
-      addSDKLog('error', `State change failed: ${errorMessage}`, error, 'WebexContext');
+      addSDKLog('error', `State change failed:`, error, 'WebexContext');
       console.error('[WebexCC] State change failed:', error);
-      // Update local state anyway for UI responsiveness
-      const idleCode = idleCodeId ? idleCodes.find(c => c.id === idleCodeId) : undefined;
-      setAgentStateInfo({
-        state,
-        idleCode,
-        lastStateChangeTime: Date.now(),
-      });
+      // Don't update local state on error - let SDK events drive state
     }
-  }, [runningInDemoMode, idleCodes, addSDKLog]);
+  }, [runningInDemoMode, idleCodes, addSDKLog, agentState?.idleCode?.id]);
 
   // Accept incoming task
   const acceptTask = useCallback(async (taskId: string) => {
