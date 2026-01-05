@@ -16,11 +16,12 @@
  * }
  */
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { DemoProvider } from './contexts/DemoContext';
+import { ThemeProvider } from './contexts/ThemeContext';
 import { CommandCenter } from './components/command-center';
 import { Toaster } from './components/ui/sonner';
 
@@ -29,6 +30,30 @@ import styles from './index.css?inline';
 
 // Create a QueryClient instance for the widget
 const queryClient = new QueryClient();
+
+// Get saved theme from localStorage
+function getSavedTheme(): 'light' | 'dark' | 'system' {
+  try {
+    const saved = localStorage.getItem('agent-preferences');
+    if (saved) {
+      const prefs = JSON.parse(saved);
+      if (prefs.theme && ['light', 'dark', 'system'].includes(prefs.theme)) {
+        return prefs.theme;
+      }
+    }
+  } catch {
+    // Ignore parse errors
+  }
+  return 'system';
+}
+
+// Resolve theme to light or dark
+function resolveTheme(theme: 'light' | 'dark' | 'system'): 'light' | 'dark' {
+  if (theme === 'system') {
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  return theme;
+}
 
 // Error Boundary to catch and display React errors
 class ErrorBoundary extends React.Component<
@@ -73,18 +98,23 @@ class ErrorBoundary extends React.Component<
   }
 }
 
-// Main App component with ALL required providers (matching App.tsx)
-function BSAgentDesktopApp() {
+// Main App component with ALL required providers
+interface BSAgentDesktopAppProps {
+  targetElement?: HTMLElement | null;
+}
+
+function BSAgentDesktopApp({ targetElement }: BSAgentDesktopAppProps) {
   return (
     <React.StrictMode>
       <ErrorBoundary>
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
-            <DemoProvider>
-              {/* No ThemeProvider - dark class applied directly to Shadow DOM container */}
-              <CommandCenter />
-              <Toaster />
-            </DemoProvider>
+            <ThemeProvider targetElement={targetElement}>
+              <DemoProvider>
+                <CommandCenter />
+                <Toaster />
+              </DemoProvider>
+            </ThemeProvider>
           </TooltipProvider>
         </QueryClientProvider>
       </ErrorBoundary>
@@ -111,21 +141,28 @@ class BSAgentDesktopElement extends HTMLElement {
     styleSheet.textContent = styles;
     shadow.appendChild(styleSheet);
 
-    // Create a container div for the React app with dark theme class
+    // Get initial theme from localStorage
+    const savedTheme = getSavedTheme();
+    const initialTheme = resolveTheme(savedTheme);
+
+    // Create a container div for the React app with theme class
     this.mountPoint = document.createElement('div');
     this.mountPoint.id = 'bs-agent-desktop-root';
-    this.mountPoint.className = 'dark'; // Apply dark theme directly to Shadow DOM root
+    this.mountPoint.className = initialTheme; // Apply resolved theme
     this.mountPoint.style.width = '100%';
     this.mountPoint.style.height = '100%';
     this.mountPoint.style.minHeight = '100vh';
-    this.mountPoint.style.backgroundColor = 'hsl(222.2 84% 4.9%)'; // Match --background
+    // Dynamic background based on theme
+    this.mountPoint.style.backgroundColor = initialTheme === 'dark' 
+      ? 'hsl(222.2 84% 4.9%)' 
+      : 'hsl(0 0% 100%)';
     shadow.appendChild(this.mountPoint);
 
-    // Mount the React application
+    // Mount the React application with reference to mountPoint for theme updates
     this.root = ReactDOM.createRoot(this.mountPoint);
-    this.root.render(<BSAgentDesktopApp />);
+    this.root.render(<BSAgentDesktopApp targetElement={this.mountPoint} />);
 
-    console.log('[BS Agent Desktop] Web component mounted with providers and dark theme');
+    console.log(`[BS Agent Desktop] Web component mounted with ${initialTheme} theme`);
   }
 
   disconnectedCallback() {

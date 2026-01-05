@@ -7,23 +7,26 @@ import Index from "./pages/Index";
 import NotFound from "./pages/NotFound";
 import { CommandCenter } from "./components/command-center";
 import { DemoProvider } from "./contexts/DemoContext";
+import { ThemeProvider } from "./contexts/ThemeContext";
 
 const queryClient = new QueryClient();
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
     <TooltipProvider>
-      <DemoProvider>
-        <Toaster />
-        <Sonner />
-        <BrowserRouter>
-          <Routes>
-            <Route path="/" element={<CommandCenter />} />
-            {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </BrowserRouter>
-      </DemoProvider>
+      <ThemeProvider>
+        <DemoProvider>
+          <Toaster />
+          <Sonner />
+          <BrowserRouter>
+            <Routes>
+              <Route path="/" element={<CommandCenter />} />
+              {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          </BrowserRouter>
+        </DemoProvider>
+      </ThemeProvider>
     </TooltipProvider>
   </QueryClientProvider>
 );

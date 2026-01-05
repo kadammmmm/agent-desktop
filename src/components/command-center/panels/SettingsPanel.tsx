@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useWebex } from '@/contexts/WebexContext';
+import { useTheme } from '@/contexts/ThemeContext';
 import { isDemoMode } from '@/lib/webexEnvironment';
 import {
   Settings, Volume2, Mic, Monitor, Bell, Keyboard,
@@ -61,6 +62,7 @@ const KEYBOARD_SHORTCUTS = [
 
 export function SettingsPanel() {
   const { agentProfile } = useWebex();
+  const { theme, setTheme } = useTheme();
   const demoMode = isDemoMode();
   
   const [preferences, setPreferences] = useState<AgentPreferences>(() => {
@@ -243,26 +245,26 @@ export function SettingsPanel() {
             </div>
             <div className="flex items-center gap-1 border rounded-lg p-1">
               <Button
-                variant={preferences.theme === 'light' ? 'secondary' : 'ghost'}
+                variant={theme === 'light' ? 'secondary' : 'ghost'}
                 size="sm"
                 className="h-7 px-2"
-                onClick={() => updatePreference('theme', 'light')}
+                onClick={() => setTheme('light')}
               >
                 <Sun className="w-4 h-4" />
               </Button>
               <Button
-                variant={preferences.theme === 'dark' ? 'secondary' : 'ghost'}
+                variant={theme === 'dark' ? 'secondary' : 'ghost'}
                 size="sm"
                 className="h-7 px-2"
-                onClick={() => updatePreference('theme', 'dark')}
+                onClick={() => setTheme('dark')}
               >
                 <Moon className="w-4 h-4" />
               </Button>
               <Button
-                variant={preferences.theme === 'system' ? 'secondary' : 'ghost'}
+                variant={theme === 'system' ? 'secondary' : 'ghost'}
                 size="sm"
                 className="h-7 px-2"
-                onClick={() => updatePreference('theme', 'system')}
+                onClick={() => setTheme('system')}
               >
                 <Monitor className="w-4 h-4" />
               </Button>
