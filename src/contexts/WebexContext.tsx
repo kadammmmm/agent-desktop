@@ -332,15 +332,38 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
           desktopRef.current = Desktop;
           addSDKLog('info', 'SDK module imported successfully', { hasDesktop: !!Desktop }, 'WebexContext');
           
-          // Initialize the SDK config
+          // Initialize the SDK config - wrap only this in try-catch to handle AQM/AI Assistant errors gracefully
           addSDKLog('info', 'Calling Desktop.config.init()...', null, 'WebexContext');
-          await desktopRef.current.config.init({
-            widgetName: 'BSAgentDesktop',
-            widgetProvider: 'b+s',
-          });
-          addSDKLog('info', 'Desktop.config.init() completed', null, 'WebexContext');
-          console.log('[WebexCC] SDK config initialized successfully');
+          try {
+            await desktopRef.current.config.init({
+              widgetName: 'BSAgentDesktop',
+              widgetProvider: 'b+s',
+            });
+            addSDKLog('info', 'Desktop.config.init() completed', null, 'WebexContext');
+            console.log('[WebexCC] SDK config initialized successfully');
+          } catch (initError) {
+            const errorMessage = initError instanceof Error ? initError.message : String(initError);
+            
+            // Check if this is the expected AQM/AI Assistant error (AQM feature not yet available)
+            if (errorMessage.includes('aiAssistant') || errorMessage.includes('aqm')) {
+              addSDKLog('warn', 
+                'AQM/AI Assistant module not available (expected - AQM not yet enabled) - continuing with full core functionality', 
+                { error: errorMessage }, 
+                'WebexContext'
+              );
+              console.warn('[WebexCC] AQM/AI Assistant not available, continuing with core SDK:', errorMessage);
+              // Continue - don't throw, core SDK functionality works fine without AQM
+            } else {
+              // Unexpected error - re-throw to be caught by outer handler
+              addSDKLog('error', 'SDK config.init() failed with unexpected error', 
+                { error: errorMessage, stack: (initError as Error)?.stack }, 
+                'WebexContext'
+              );
+              throw initError;
+            }
+          }
           
+          // Continue with normal initialization (works regardless of AQM availability)
           // Wait for agent data to become fully available (poll for up to 10 seconds)
           let agentInfo = desktopRef.current.agentStateInfo?.latestData;
           let attempts = 0;
@@ -503,9 +526,40 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
             handleAgentWrapup(contact);
           });
           
+          // Additional event listeners for comprehensive contact handling
+          desktopRef.current.agentContact.addEventListener('eAgentOfferContactRona', (contact: any) => {
+            addSDKLog('info', 'RONA event received', contact, 'WebexContext');
+            setIncomingTask(null);
+            setAgentStateInfo(prev => prev ? { ...prev, state: 'RONA' } : null);
+          });
+          
+          desktopRef.current.agentContact.addEventListener('eAgentContactHeld', (contact: any) => {
+            addSDKLog('info', 'Contact held', contact, 'WebexContext');
+            const taskId = contact.interactionId || contact.id;
+            setActiveTasks(prev => prev.map(t => 
+              t.taskId === taskId ? { ...t, isHeld: true, state: 'held' } : t
+            ));
+          });
+          
+          desktopRef.current.agentContact.addEventListener('eAgentContactUnHeld', (contact: any) => {
+            addSDKLog('info', 'Contact unheld', contact, 'WebexContext');
+            const taskId = contact.interactionId || contact.id;
+            setActiveTasks(prev => prev.map(t => 
+              t.taskId === taskId ? { ...t, isHeld: false, state: 'connected' } : t
+            ));
+          });
+          
+          desktopRef.current.agentContact.addEventListener('eCallRecordingStarted', (contact: any) => {
+            addSDKLog('info', 'Recording started', contact, 'WebexContext');
+            const taskId = contact.interactionId || contact.id;
+            setActiveTasks(prev => prev.map(t => 
+              t.taskId === taskId ? { ...t, isRecording: true } : t
+            ));
+          });
+          
           addSDKLog('info', 'SDK initialization complete - all event listeners registered', null, 'WebexContext');
           
-          // Hydrate current interactions from TaskMap (success mode)
+          // Hydrate current interactions from TaskMap
           try {
             addSDKLog('info', 'Fetching TaskMap to hydrate existing contacts...', null, 'WebexContext');
             const taskMap = await desktopRef.current.actions?.getTaskMap();
@@ -545,252 +599,13 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
           } catch (taskMapError) {
             addSDKLog('warn', 'Could not fetch TaskMap', taskMapError, 'WebexContext');
           }
-          
         } catch (sdkError) {
+          // Outer catch - only reached if SDK import fails or re-thrown error from config.init
           const errorMessage = sdkError instanceof Error ? sdkError.message : String(sdkError);
-          
-          // Check if this is an expected AI Assistant error (common when AI Assistant module is not enabled)
-          const isAiAssistantError = errorMessage.includes('aiAssistant');
-          
-          addSDKLog(
-            isAiAssistantError ? 'warn' : 'error', 
-            isAiAssistantError 
-              ? 'AI Assistant module not available - continuing in degraded mode (this is normal if AI Assistant is not enabled for this tenant)'
-              : 'SDK config.init() threw error', 
-            { error: errorMessage, stack: (sdkError as Error)?.stack }, 
-            'WebexContext'
-          );
-          console.warn('[WebexCC] SDK config.init() error (continuing in degraded mode):', sdkError);
-          
-          // Check if agentStateInfo is still available despite the config.init() error
-          // The SDK may have partially initialized core modules before failing on optional ones (like AI Assistant)
-          let agentInfo = desktopRef.current?.agentStateInfo?.latestData;
-          
-          // Poll for agent info readiness in degraded mode too
-          if (!isAgentInfoReady(agentInfo)) {
-            addSDKLog('info', 'Agent data not ready yet in degraded mode, polling...', null, 'WebexContext');
-            let attempts = 0;
-            const maxAttempts = 20;
-            while (!isAgentInfoReady(agentInfo) && attempts < maxAttempts) {
-              await new Promise(resolve => setTimeout(resolve, 500));
-              agentInfo = desktopRef.current?.agentStateInfo?.latestData;
-              attempts++;
-            }
-          }
-          
-          if (isAgentInfoReady(agentInfo)) {
-            addSDKLog('warn', 'SDK init threw error but agentStateInfo is available - continuing with degraded mode', null, 'WebexContext');
-            console.warn('[WebexCC] Continuing with partial SDK functionality despite init error');
-            
-            // Load agent data from the available agentStateInfo
-            setAgentProfile({
-              agentId: agentInfo.agentId || agentInfo.agentProfileID || '',
-              name: agentInfo.agentName || agentInfo.agentId || 'Agent',
-              email: agentInfo.agentMailId || agentInfo.agentEmail || '',
-              teamId: agentInfo.teamId || '',
-              teamName: agentInfo.teamName || '',
-              siteId: agentInfo.siteId || '',
-              siteName: agentInfo.siteName || '',
-              extension: agentInfo.extension || '',
-              dialNumber: agentInfo.dn || '',
-            });
-            
-            const mappedState = mapSdkStateToAgentState(agentInfo.subStatus || agentInfo.status || 'Idle');
-            setAgentStateInfo({
-              state: mappedState,
-              idleCode: agentInfo.idleCode || (agentInfo.auxCodeId ? { id: agentInfo.auxCodeId, name: agentInfo.auxCodeName || '' } : undefined),
-              lastStateChangeTime: agentInfo.lastStateChangeTimestamp || Date.now(),
-            });
-            
-            addSDKLog('info', 'Agent data loaded in degraded mode', {
-              agentName: agentInfo.agentName,
-              status: mappedState,
-              idleCodesCount: agentInfo.idleCodes?.length,
-            }, 'WebexContext');
-            
-            // Source idleCodes from latestData first (most reliable), fallback to actions.getIdleCodes()
-            let idleCodesLoaded = false;
-            if (agentInfo.idleCodes && Array.isArray(agentInfo.idleCodes) && agentInfo.idleCodes.length > 0) {
-              setIdleCodes(agentInfo.idleCodes.map((code: any) => ({
-                id: code.id,
-                name: code.name,
-              })));
-              addSDKLog('info', `Loaded ${agentInfo.idleCodes.length} idle codes from latestData (degraded mode)`, null, 'WebexContext');
-              idleCodesLoaded = true;
-            }
-            
-            // Fallback to actions.getIdleCodes() if latestData didn't have them
-            if (!idleCodesLoaded) {
-              try {
-                addSDKLog('info', 'Fetching idle codes via actions in degraded mode...', null, 'WebexContext');
-                const sdkIdleCodes = await desktopRef.current.actions?.getIdleCodes();
-                if (sdkIdleCodes && Array.isArray(sdkIdleCodes) && sdkIdleCodes.length > 0) {
-                  setIdleCodes(sdkIdleCodes.map((code: any) => ({
-                    id: code.id,
-                    name: code.name,
-                  })));
-                  addSDKLog('info', `Loaded ${sdkIdleCodes.length} idle codes via actions (degraded mode)`, null, 'WebexContext');
-                }
-              } catch (e) {
-                addSDKLog('warn', 'Could not fetch idle codes via actions in degraded mode', e, 'WebexContext');
-              }
-            }
-            
-            // Source wrapUpCodes from latestData
-            if (agentInfo.wrapupCodes && Array.isArray(agentInfo.wrapupCodes) && agentInfo.wrapupCodes.length > 0) {
-              setWrapUpCodes(agentInfo.wrapupCodes.map((code: any) => ({
-                id: code.id,
-                name: code.name,
-              })));
-              addSDKLog('info', `Loaded ${agentInfo.wrapupCodes.length} wrap-up codes from latestData (degraded mode)`, null, 'WebexContext');
-            }
-            
-            // Set up event listener for state updates even in degraded mode
-            try {
-              desktopRef.current.agentStateInfo.addEventListener('updated', (changes: any) => {
-                addSDKLog('debug', 'Agent state updated event received (degraded mode)', changes, 'WebexContext');
-                const latestData = desktopRef.current?.agentStateInfo?.latestData;
-                if (latestData) {
-                  const newMappedState = mapSdkStateToAgentState(latestData.subStatus || latestData.status || 'Idle');
-                  setAgentStateInfo({
-                    state: newMappedState,
-                    idleCode: latestData.idleCode || (latestData.auxCodeId ? { id: latestData.auxCodeId, name: latestData.auxCodeName || '' } : undefined),
-                    lastStateChangeTime: latestData.lastStateChangeTimestamp || Date.now(),
-                  });
-                  
-                  // Also sync idleCodes and wrapUpCodes on each update
-                  if (latestData.idleCodes && Array.isArray(latestData.idleCodes) && latestData.idleCodes.length > 0) {
-                    setIdleCodes(latestData.idleCodes.map((code: any) => ({
-                      id: code.id,
-                      name: code.name,
-                    })));
-                  }
-                  if (latestData.wrapupCodes && Array.isArray(latestData.wrapupCodes) && latestData.wrapupCodes.length > 0) {
-                    setWrapUpCodes(latestData.wrapupCodes.map((code: any) => ({
-                      id: code.id,
-                      name: code.name,
-                    })));
-                  }
-                }
-              });
-            } catch (listenerError) {
-              addSDKLog('warn', 'Could not set up state change listener in degraded mode', listenerError, 'WebexContext');
-            }
-            
-            // Register agentContact event listeners in degraded mode (same as success mode)
-            try {
-              addSDKLog('info', 'Registering agentContact listeners in degraded mode...', null, 'WebexContext');
-              
-              // Remove any existing listeners first to avoid duplicates
-              desktopRef.current.agentContact.removeAllEventListeners();
-              
-              desktopRef.current.agentContact.addEventListener('eAgentOfferContact', (contact: any) => {
-                addSDKLog('info', 'Incoming contact offer (degraded mode)', contact, 'WebexContext');
-                handleIncomingContact(contact);
-              });
-              
-              desktopRef.current.agentContact.addEventListener('eAgentContactAssigned', (contact: any) => {
-                addSDKLog('info', 'Contact assigned (degraded mode)', contact, 'WebexContext');
-                handleContactAssigned(contact);
-              });
-              
-              desktopRef.current.agentContact.addEventListener('eAgentContactEnded', (contact: any) => {
-                addSDKLog('info', 'Contact ended (degraded mode)', contact, 'WebexContext');
-                handleContactEnded(contact);
-              });
-              
-              desktopRef.current.agentContact.addEventListener('eAgentContactWrappedUp', (contact: any) => {
-                addSDKLog('info', 'Contact wrapped up (degraded mode)', contact, 'WebexContext');
-                handleContactWrappedUp(contact);
-              });
-              
-              desktopRef.current.agentContact.addEventListener('eAgentWrapup', (contact: any) => {
-                addSDKLog('info', 'Agent wrapup state (degraded mode)', contact, 'WebexContext');
-                handleAgentWrapup(contact);
-              });
-              
-              desktopRef.current.agentContact.addEventListener('eAgentOfferContactRona', (contact: any) => {
-                addSDKLog('info', 'RONA event received (degraded mode)', contact, 'WebexContext');
-                setIncomingTask(null);
-                setAgentStateInfo(prev => prev ? { ...prev, state: 'RONA' } : null);
-              });
-              
-              desktopRef.current.agentContact.addEventListener('eAgentContactHeld', (contact: any) => {
-                addSDKLog('info', 'Contact held (degraded mode)', contact, 'WebexContext');
-                const taskId = contact.interactionId || contact.id;
-                setActiveTasks(prev => prev.map(t => 
-                  t.taskId === taskId ? { ...t, isHeld: true, state: 'held' } : t
-                ));
-              });
-              
-              desktopRef.current.agentContact.addEventListener('eAgentContactUnHeld', (contact: any) => {
-                addSDKLog('info', 'Contact unheld (degraded mode)', contact, 'WebexContext');
-                const taskId = contact.interactionId || contact.id;
-                setActiveTasks(prev => prev.map(t => 
-                  t.taskId === taskId ? { ...t, isHeld: false, state: 'connected' } : t
-                ));
-              });
-              
-              desktopRef.current.agentContact.addEventListener('eCallRecordingStarted', (contact: any) => {
-                addSDKLog('info', 'Recording started (degraded mode)', contact, 'WebexContext');
-                const taskId = contact.interactionId || contact.id;
-                setActiveTasks(prev => prev.map(t => 
-                  t.taskId === taskId ? { ...t, isRecording: true } : t
-                ));
-              });
-              
-              addSDKLog('info', 'AgentContact listeners registered (degraded mode)', null, 'WebexContext');
-            } catch (listenerError) {
-              addSDKLog('warn', 'Could not set up agentContact listeners in degraded mode', listenerError, 'WebexContext');
-            }
-            
-            // Hydrate current interactions from TaskMap
-            try {
-              addSDKLog('info', 'Fetching TaskMap to hydrate existing contacts...', null, 'WebexContext');
-              const taskMap = await desktopRef.current.actions?.getTaskMap();
-              if (taskMap && typeof taskMap === 'object') {
-                const tasks = Object.values(taskMap) as any[];
-                addSDKLog('info', `Fetched TaskMap with ${tasks.length} tasks`, taskMap, 'WebexContext');
-                
-                const hydratedTasks: Task[] = tasks.map((contact: any) => ({
-                  taskId: contact.interactionId || contact.id,
-                  mediaType: mapMediaType(contact.mediaType),
-                  mediaChannel: contact.mediaChannel || 'telephony',
-                  state: mapContactState(contact.state || contact.status || 'connected'),
-                  direction: contact.direction || 'inbound',
-                  queueName: contact.queueName || 'Unknown Queue',
-                  ani: contact.ani || contact.from || '',
-                  dnis: contact.dnis || contact.to || '',
-                  startTime: contact.startTimestamp || Date.now(),
-                  isRecording: contact.isRecording || false,
-                  isMuted: contact.isMuted || false,
-                  isHeld: contact.isHeld || false,
-                  wrapUpRequired: contact.wrapUpRequired !== false,
-                  cadVariables: contact.cadVariables || {},
-                  customerName: contact.customerName,
-                  customerEmail: contact.customerEmail,
-                  customerPhone: contact.ani,
-                  mediaResourceId: contact.mediaResourceId,
-                  isConsult: contact.isConsult || false,
-                  isPostCallConsult: contact.isPostCallConsult || false,
-                }));
-                
-                if (hydratedTasks.length > 0) {
-                  setActiveTasks(hydratedTasks);
-                  setSelectedTaskId(hydratedTasks[0].taskId);
-                  addSDKLog('info', `Hydrated ${hydratedTasks.length} active tasks from TaskMap`, null, 'WebexContext');
-                }
-              }
-            } catch (taskMapError) {
-              addSDKLog('warn', 'Could not fetch TaskMap in degraded mode', taskMapError, 'WebexContext');
-            }
-            
-          } else {
-            // Truly failed - no SDK access at all
-            setIsConnected(false);
-            setConnectionError(`SDK initialization failed: ${errorMessage}`);
-            return;
-          }
+          addSDKLog('error', 'SDK initialization failed', { error: errorMessage }, 'WebexContext');
+          setIsConnected(false);
+          setConnectionError(`SDK initialization failed: ${errorMessage}`);
+          console.error('[WebexCC] SDK initialization error:', sdkError);
         }
       }
       
