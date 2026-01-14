@@ -591,37 +591,75 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
           try {
             addSDKLog('info', 'Fetching TaskMap to hydrate existing contacts...', null, 'WebexContext');
             const taskMap = await desktopRef.current.actions?.getTaskMap();
+            addSDKLog('info', 'TaskMap raw response', { 
+              taskMapType: typeof taskMap,
+              taskMapKeys: taskMap ? Object.keys(taskMap) : [],
+              taskMapContent: taskMap,
+            }, 'WebexContext');
+            
             if (taskMap && typeof taskMap === 'object') {
               const tasks = Object.values(taskMap) as any[];
-              addSDKLog('info', `Fetched TaskMap with ${tasks.length} tasks`, taskMap, 'WebexContext');
+              addSDKLog('info', `Processing ${tasks.length} tasks from TaskMap`, null, 'WebexContext');
               
-              const hydratedTasks: Task[] = tasks.map((contact: any) => ({
-                taskId: contact.interactionId || contact.id,
-                mediaType: mapMediaType(contact.mediaType),
-                mediaChannel: contact.mediaChannel || 'telephony',
-                state: mapContactState(contact.state || contact.status || 'connected'),
-                direction: contact.direction || 'inbound',
-                queueName: contact.queueName || 'Unknown Queue',
-                ani: contact.ani || contact.from || '',
-                dnis: contact.dnis || contact.to || '',
-                startTime: contact.startTimestamp || Date.now(),
-                isRecording: contact.isRecording || false,
-                isMuted: contact.isMuted || false,
-                isHeld: contact.isHeld || false,
-                wrapUpRequired: contact.wrapUpRequired !== false,
-                cadVariables: contact.cadVariables || {},
-                customerName: contact.customerName,
-                customerEmail: contact.customerEmail,
-                customerPhone: contact.ani,
-                mediaResourceId: contact.mediaResourceId,
-                isConsult: contact.isConsult || false,
-                isPostCallConsult: contact.isPostCallConsult || false,
-              }));
+              const hydratedTasks: Task[] = tasks.map((taskEntry: any) => {
+                // Use extractContactData for consistent data extraction
+                const contact = extractContactData(taskEntry);
+                addSDKLog('info', 'Hydrating task with extracted data', { 
+                  taskId: contact.interactionId,
+                  ani: contact.ani,
+                  customerName: contact.customerName,
+                  state: contact.state,
+                }, 'WebexContext');
+                
+                return {
+                  taskId: contact.interactionId || `task-${Date.now()}`,
+                  mediaType: mapMediaType(contact.mediaType),
+                  mediaChannel: contact.mediaChannel || 'telephony',
+                  state: mapContactState(contact.state || 'connected'),
+                  direction: contact.direction as 'inbound' | 'outbound',
+                  queueName: contact.queueName || 'Unknown Queue',
+                  ani: contact.ani || '',
+                  dnis: contact.dnis || '',
+                  startTime: Date.now(),
+                  isRecording: contact.isRecording || false,
+                  isMuted: false,
+                  isHeld: false,
+                  wrapUpRequired: true,
+                  cadVariables: contact.cadVariables || {},
+                  customerName: contact.customerName,
+                  customerEmail: contact.customerEmail,
+                  customerPhone: contact.customerPhone || contact.ani,
+                  mediaResourceId: contact.mediaResourceId,
+                  isConsult: false,
+                  isPostCallConsult: false,
+                };
+              });
               
               if (hydratedTasks.length > 0) {
                 setActiveTasks(hydratedTasks);
                 setSelectedTaskId(hydratedTasks[0].taskId);
-                addSDKLog('info', `Hydrated ${hydratedTasks.length} active tasks from TaskMap`, null, 'WebexContext');
+                
+                // Also populate customer profile from first task
+                const firstContact = extractContactData(tasks[0]);
+                if (firstContact.customerName || firstContact.ani) {
+                  setCustomerProfile({
+                    id: hydratedTasks[0].taskId,
+                    name: firstContact.customerName || firstContact.ani || 'Unknown Customer',
+                    email: firstContact.customerEmail || '',
+                    phone: firstContact.customerPhone || firstContact.ani || '',
+                    company: firstContact.company || '',
+                    isVerified: false,
+                    tags: [] as CustomerTag[],
+                    interactionHistory: [] as CallLogEntry[],
+                    cadVariables: firstContact.cadVariables || {},
+                  });
+                }
+                
+                addSDKLog('info', `Hydrated ${hydratedTasks.length} active tasks from TaskMap`, { 
+                  firstTaskId: hydratedTasks[0].taskId,
+                  firstTaskAni: hydratedTasks[0].ani,
+                  firstTaskCustomerName: hydratedTasks[0].customerName,
+                }, 'WebexContext');
               }
             }
           } catch (taskMapError) {
@@ -688,33 +726,80 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     return hasIdentity && hasStatus;
   };
   
-  // Handle incoming contact offer
-  const handleIncomingContact = (contact: any) => {
-    // DIAGNOSTIC: Log full contact payload to verify real data is coming through
-    addSDKLog('info', 'handleIncomingContact called with full payload', {
-      fullPayload: contact,
-      interactionId: contact.interactionId,
-      id: contact.id,
-      ani: contact.ani,
-      from: contact.from,
-      mediaType: contact.mediaType,
-      queueName: contact.queueName,
-      ronaTimeout: contact.ronaTimeout,
-      contactKeys: Object.keys(contact || {}),
-    }, 'WebexContext');
-    console.log('[WebexCC] handleIncomingContact - FULL PAYLOAD:', JSON.stringify(contact, null, 2));
+  // ============================================================================
+  // SDK Contact Data Extractor
+  // SDK events nest data under event.data.interaction - this helper normalizes it
+  // ============================================================================
+  const extractContactData = (event: any) => {
+    // SDK events can have data nested under event.data.interaction
+    const interaction = event?.data?.interaction || event?.interaction || event;
+    const callAssociatedDetails = interaction?.callAssociatedDetails || {};
+    const callAssociatedData = interaction?.callAssociatedData || {};
+    const callProcessingDetails = interaction?.callProcessingDetails || {};
+    const participants = interaction?.participants || {};
     
-    const taskId = contact.interactionId || contact.id || `task-${Date.now()}`;
+    // Find customer participant for ANI
+    const customerParticipant = Object.values(participants).find(
+      (p: any) => p.pType === 'Customer' || p.type === 'Customer'
+    ) as any;
+    
+    // Extract CAD variables as key-value pairs
+    const cadVariables: Record<string, string> = {};
+    if (callAssociatedData && typeof callAssociatedData === 'object') {
+      for (const [key, val] of Object.entries(callAssociatedData)) {
+        const cadVal = val as any;
+        if (cadVal?.value !== undefined) {
+          cadVariables[key] = cadVal.value;
+        }
+      }
+    }
+    
+    return {
+      interactionId: interaction?.interactionId || event?.interactionId || event?.data?.interactionId,
+      mediaType: interaction?.mediaType || event?.mediaType || 'telephony',
+      mediaResourceId: interaction?.mainInteractionId || interaction?.mediaResourceId || event?.mediaResourceId,
+      ani: callAssociatedDetails?.ani || interaction?.ani || customerParticipant?.id || '',
+      dnis: callAssociatedDetails?.dn || interaction?.dnis || callProcessingDetails?.dnis || '',
+      queueName: callAssociatedDetails?.virtualTeamName || callProcessingDetails?.virtualTeamName || interaction?.queueName || '',
+      ronaTimeout: parseInt(callAssociatedDetails?.ronaTimeout || '15'),
+      direction: interaction?.contactDirection?.type?.toLowerCase() === 'inbound' ? 'inbound' : 'outbound' as const,
+      state: interaction?.state || 'connected',
+      customerName: callAssociatedData?.L_Caller_Name?.value || callAssociatedData?.G_Customer_Name?.value || '',
+      customerEmail: callAssociatedData?.Customer_Email?.value || '',
+      customerPhone: callAssociatedData?.L_Calling_Number?.value || callAssociatedDetails?.ani || '',
+      company: callAssociatedData?.Company?.value || '',
+      cadVariables,
+      mediaChannel: interaction?.mediaChannel || 'telephony',
+      isRecording: callProcessingDetails?.recordInProgress === 'true',
+      raw: interaction, // Keep raw data for debugging
+    };
+  };
+  
+  // Handle incoming contact offer
+  const handleIncomingContact = (event: any) => {
+    // Extract contact data from nested SDK payload
+    const contact = extractContactData(event);
+    
+    addSDKLog('info', 'handleIncomingContact - extracted data', {
+      extracted: contact,
+      rawEventKeys: Object.keys(event || {}),
+      hasDataProperty: !!event?.data,
+      hasInteractionProperty: !!event?.data?.interaction,
+    }, 'WebexContext');
+    console.log('[WebexCC] handleIncomingContact - EXTRACTED:', JSON.stringify(contact, null, 2));
+    
+    const taskId = contact.interactionId || `task-${Date.now()}`;
     const incomingTaskData = {
       taskId,
       mediaType: mapMediaType(contact.mediaType),
-      ani: contact.ani || contact.from || 'Unknown',
+      ani: contact.ani || 'Unknown',
       queueName: contact.queueName || 'Unknown Queue',
       ronaTimeout: contact.ronaTimeout || 15,
       startTime: Date.now(),
+      customerName: contact.customerName,
     };
     
-    addSDKLog('info', 'Setting incomingTask state', incomingTaskData, 'WebexContext');
+    addSDKLog('info', 'Setting incomingTask state with real data', incomingTaskData, 'WebexContext');
     setIncomingTask(incomingTaskData);
     
     // RONA timer
@@ -727,55 +812,51 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   };
   
   // Handle contact assigned (accepted)
-  const handleContactAssigned = (contact: any) => {
-    // DIAGNOSTIC: Log full contact payload and current state
-    addSDKLog('info', 'handleContactAssigned called with full payload', {
-      fullPayload: contact,
-      interactionId: contact.interactionId,
-      id: contact.id,
-      ani: contact.ani,
-      from: contact.from,
-      mediaType: contact.mediaType,
-      queueName: contact.queueName,
-      mediaResourceId: contact.mediaResourceId,
-      cadVariables: contact.cadVariables,
-      contactKeys: Object.keys(contact || {}),
+  const handleContactAssigned = (event: any) => {
+    // Extract contact data from nested SDK payload
+    const contact = extractContactData(event);
+    
+    addSDKLog('info', 'handleContactAssigned - extracted data', {
+      extracted: contact,
+      rawEventKeys: Object.keys(event || {}),
+      hasDataProperty: !!event?.data,
+      hasInteractionProperty: !!event?.data?.interaction,
       currentIncomingTaskId: incomingTask?.taskId,
       currentActiveTasksCount: activeTasks.length,
     }, 'WebexContext');
-    console.log('[WebexCC] handleContactAssigned - FULL PAYLOAD:', JSON.stringify(contact, null, 2));
+    console.log('[WebexCC] handleContactAssigned - EXTRACTED:', JSON.stringify(contact, null, 2));
     
     if (ronaTimerRef.current) {
       clearTimeout(ronaTimerRef.current);
       addSDKLog('info', 'Cleared RONA timer', null, 'WebexContext');
     }
     
-    const taskId = contact.interactionId || contact.id;
+    const taskId = contact.interactionId || `task-${Date.now()}`;
     const newTask: Task = {
       taskId,
       mediaType: mapMediaType(contact.mediaType),
       mediaChannel: contact.mediaChannel || 'telephony',
       state: 'connected',
-      direction: contact.direction || 'inbound',
+      direction: contact.direction as 'inbound' | 'outbound',
       queueName: contact.queueName || 'Unknown Queue',
-      ani: contact.ani || contact.from || '',
-      dnis: contact.dnis || contact.to || '',
+      ani: contact.ani || '',
+      dnis: contact.dnis || '',
       startTime: Date.now(),
       isRecording: contact.isRecording || false,
       isMuted: false,
       isHeld: false,
-      wrapUpRequired: contact.wrapUpRequired !== false,
+      wrapUpRequired: true,
       cadVariables: contact.cadVariables || {},
       customerName: contact.customerName,
       customerEmail: contact.customerEmail,
-      customerPhone: contact.ani,
+      customerPhone: contact.customerPhone || contact.ani,
       // SDK-specific fields for call controls
       mediaResourceId: contact.mediaResourceId,
-      isConsult: contact.isConsult || false,
-      isPostCallConsult: contact.isPostCallConsult || false,
+      isConsult: false,
+      isPostCallConsult: false,
     };
     
-    addSDKLog('info', 'Creating active task from contact', { taskId, newTask }, 'WebexContext');
+    addSDKLog('info', 'Creating active task from extracted contact', { taskId, newTask }, 'WebexContext');
     
     setActiveTasks(prev => {
       const updated = [...prev.filter(t => t.taskId !== taskId), newTask];
@@ -792,27 +873,35 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       lastStateChangeTime: Date.now()
     } : null);
     
-    // Populate customer profile from contact data
+    // Populate customer profile from extracted contact data
     const customerProfileData = {
-      id: contact.customerId || taskId,
-      name: contact.customerName || contact.ani || contact.from || 'Unknown Customer',
+      id: taskId,
+      name: contact.customerName || contact.ani || 'Unknown Customer',
       email: contact.customerEmail || '',
-      phone: contact.ani || contact.from || '',
+      phone: contact.customerPhone || contact.ani || '',
       company: contact.company || '',
-      isVerified: contact.isVerified || false,
+      isVerified: false,
       tags: [] as CustomerTag[],
       interactionHistory: [] as CallLogEntry[],
       cadVariables: contact.cadVariables || {},
     };
-    addSDKLog('info', 'Setting customer profile', customerProfileData, 'WebexContext');
+    addSDKLog('info', 'Setting customer profile from extracted data', customerProfileData, 'WebexContext');
     setCustomerProfile(customerProfileData);
     
-    addSDKLog('info', `Contact assigned complete - Agent state set to Engaged`, { taskId, ani: contact.ani }, 'WebexContext');
+    addSDKLog('info', `Contact assigned complete - Agent state set to Engaged`, { 
+      taskId, 
+      ani: contact.ani,
+      customerName: contact.customerName 
+    }, 'WebexContext');
   };
   
   // Handle contact ended
-  const handleContactEnded = (contact: any) => {
-    const taskId = contact.interactionId || contact.id;
+  const handleContactEnded = (event: any) => {
+    const contact = extractContactData(event);
+    const taskId = contact.interactionId || event?.data?.interactionId || event?.interactionId;
+    
+    addSDKLog('info', 'handleContactEnded - extracted data', { extracted: contact, taskId }, 'WebexContext');
+    
     const task = activeTasks.find(t => t.taskId === taskId);
     
     if (task?.wrapUpRequired) {
@@ -847,8 +936,12 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   };
   
   // Handle contact wrapped up
-  const handleContactWrappedUp = (contact: any) => {
-    const taskId = contact.interactionId || contact.id;
+  const handleContactWrappedUp = (event: any) => {
+    const contact = extractContactData(event);
+    const taskId = contact.interactionId || event?.data?.interactionId || event?.interactionId;
+    
+    addSDKLog('info', 'handleContactWrappedUp - extracted data', { extracted: contact, taskId }, 'WebexContext');
+    
     setActiveTasks(prev => {
       const remaining = prev.filter(t => t.taskId !== taskId);
       // Set agent state back to Available if no more tasks
@@ -868,12 +961,76 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     setCustomerProfile(null);
   };
   
-  // Handle wrapup state
-  const handleAgentWrapup = (contact: any) => {
-    const taskId = contact.interactionId || contact.id;
-    setActiveTasks(prev => prev.map(t => 
-      t.taskId === taskId ? { ...t, state: 'wrapup' } : t
-    ));
+  // Handle wrapup state (eAgentWrapup event)
+  const handleAgentWrapup = (event: any) => {
+    const contact = extractContactData(event);
+    const taskId = contact.interactionId || event?.data?.interactionId || event?.interactionId;
+    
+    addSDKLog('info', 'handleAgentWrapup - extracted data', { 
+      extracted: contact, 
+      taskId,
+      customerName: contact.customerName,
+      ani: contact.ani 
+    }, 'WebexContext');
+    
+    // If we don't have this task yet (missed the offer/assigned events), create it now
+    setActiveTasks(prev => {
+      const existingTask = prev.find(t => t.taskId === taskId);
+      if (existingTask) {
+        // Task exists, just update state to wrapup
+        return prev.map(t => t.taskId === taskId ? { ...t, state: 'wrapup' as const } : t);
+      } else {
+        // Task doesn't exist - create it from the wrapup event data
+        addSDKLog('info', 'Creating task from wrapup event (missed earlier events)', { taskId, contact }, 'WebexContext');
+        const newTask: Task = {
+          taskId,
+          mediaType: mapMediaType(contact.mediaType),
+          mediaChannel: contact.mediaChannel || 'telephony',
+          state: 'wrapup',
+          direction: contact.direction as 'inbound' | 'outbound',
+          queueName: contact.queueName || 'Unknown Queue',
+          ani: contact.ani || '',
+          dnis: contact.dnis || '',
+          startTime: Date.now(),
+          isRecording: contact.isRecording || false,
+          isMuted: false,
+          isHeld: false,
+          wrapUpRequired: true,
+          cadVariables: contact.cadVariables || {},
+          customerName: contact.customerName,
+          customerEmail: contact.customerEmail,
+          customerPhone: contact.customerPhone || contact.ani,
+          mediaResourceId: contact.mediaResourceId,
+          isConsult: false,
+          isPostCallConsult: false,
+        };
+        return [...prev, newTask];
+      }
+    });
+    
+    // Also populate customer profile if we have data
+    if (contact.customerName || contact.ani) {
+      setCustomerProfile({
+        id: taskId,
+        name: contact.customerName || contact.ani || 'Unknown Customer',
+        email: contact.customerEmail || '',
+        phone: contact.customerPhone || contact.ani || '',
+        company: contact.company || '',
+        isVerified: false,
+        tags: [] as CustomerTag[],
+        interactionHistory: [] as CallLogEntry[],
+        cadVariables: contact.cadVariables || {},
+      });
+    }
+    
+    setSelectedTaskId(taskId);
+    
+    // Set agent state to WrapUp
+    setAgentStateInfo(prev => prev ? { 
+      ...prev, 
+      state: 'WrapUp',
+      lastStateChangeTime: Date.now()
+    } : null);
   };
   
   // Map SDK media type to our ChannelType
