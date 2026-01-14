@@ -15,6 +15,7 @@ import type {
   ConsultState,
   CustomerProfile,
   CustomerNote,
+  CustomerTag,
   CallLogEntry,
   ExtendedMetrics,
   ChannelType
@@ -272,6 +273,12 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     const demoMode = isDemoMode();
     setRunningInDemoMode(demoMode);
     
+    // CRITICAL: If NOT in demo mode, explicitly disable demo auto-incoming to prevent interference
+    if (!demoMode) {
+      setDemoAutoIncomingEnabled(false);
+      console.log('[WebexCC] Production mode - disabled demo auto-incoming');
+    }
+    
     // Log environment diagnostics for debugging
     const diagnostics = getEnvironmentDiagnostics();
     console.log('[WebexCC] Environment diagnostics:', diagnostics);
@@ -495,67 +502,88 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
             console.warn('[WebexCC] Could not fetch wrap-up codes:', e);
           }
           
-          // Subscribe to contact events
+          // Register event listeners for real-time updates
+          addSDKLog('info', 'Registering SDK event listeners...', null, 'WebexContext');
+          
+          // Verify agentContact module is available
+          if (desktopRef.current.agentContact) {
+            addSDKLog('info', 'agentContact module available', {
+              hasAgentContact: true,
+              agentContactKeys: Object.keys(desktopRef.current.agentContact),
+            }, 'WebexContext');
+          } else {
+            addSDKLog('error', 'agentContact module NOT available!', null, 'WebexContext');
+          }
+          
           desktopRef.current.agentContact.addEventListener('eAgentOfferContact', (contact: any) => {
-            addSDKLog('info', 'Incoming contact offer', contact, 'WebexContext');
-            console.log('[WebexCC] Incoming contact offer:', contact);
+            addSDKLog('info', '>>> eAgentOfferContact EVENT FIRED <<<', { contactType: typeof contact, contactKeys: Object.keys(contact || {}) }, 'WebexContext');
+            console.log('[WebexCC] >>> eAgentOfferContact EVENT FIRED:', contact);
             handleIncomingContact(contact);
           });
+          addSDKLog('info', 'Registered: eAgentOfferContact listener', null, 'WebexContext');
           
           desktopRef.current.agentContact.addEventListener('eAgentContactAssigned', (contact: any) => {
-            addSDKLog('info', 'Contact assigned', contact, 'WebexContext');
-            console.log('[WebexCC] Contact assigned:', contact);
+            addSDKLog('info', '>>> eAgentContactAssigned EVENT FIRED <<<', { contactType: typeof contact, contactKeys: Object.keys(contact || {}) }, 'WebexContext');
+            console.log('[WebexCC] >>> eAgentContactAssigned EVENT FIRED:', contact);
             handleContactAssigned(contact);
           });
+          addSDKLog('info', 'Registered: eAgentContactAssigned listener', null, 'WebexContext');
           
           desktopRef.current.agentContact.addEventListener('eAgentContactEnded', (contact: any) => {
-            addSDKLog('info', 'Contact ended', contact, 'WebexContext');
-            console.log('[WebexCC] Contact ended:', contact);
+            addSDKLog('info', '>>> eAgentContactEnded EVENT FIRED <<<', contact, 'WebexContext');
+            console.log('[WebexCC] >>> eAgentContactEnded EVENT FIRED:', contact);
             handleContactEnded(contact);
           });
+          addSDKLog('info', 'Registered: eAgentContactEnded listener', null, 'WebexContext');
           
           desktopRef.current.agentContact.addEventListener('eAgentContactWrappedUp', (contact: any) => {
-            addSDKLog('info', 'Contact wrapped up', contact, 'WebexContext');
-            console.log('[WebexCC] Contact wrapped up:', contact);
+            addSDKLog('info', '>>> eAgentContactWrappedUp EVENT FIRED <<<', contact, 'WebexContext');
+            console.log('[WebexCC] >>> eAgentContactWrappedUp EVENT FIRED:', contact);
             handleContactWrappedUp(contact);
           });
+          addSDKLog('info', 'Registered: eAgentContactWrappedUp listener', null, 'WebexContext');
           
           desktopRef.current.agentContact.addEventListener('eAgentWrapup', (contact: any) => {
-            addSDKLog('info', 'Agent wrapup state', contact, 'WebexContext');
-            console.log('[WebexCC] Agent wrapup state:', contact);
+            addSDKLog('info', '>>> eAgentWrapup EVENT FIRED <<<', contact, 'WebexContext');
+            console.log('[WebexCC] >>> eAgentWrapup EVENT FIRED:', contact);
             handleAgentWrapup(contact);
           });
+          addSDKLog('info', 'Registered: eAgentWrapup listener', null, 'WebexContext');
           
           // Additional event listeners for comprehensive contact handling
           desktopRef.current.agentContact.addEventListener('eAgentOfferContactRona', (contact: any) => {
-            addSDKLog('info', 'RONA event received', contact, 'WebexContext');
+            addSDKLog('info', '>>> eAgentOfferContactRona EVENT FIRED <<<', contact, 'WebexContext');
             setIncomingTask(null);
             setAgentStateInfo(prev => prev ? { ...prev, state: 'RONA' } : null);
           });
+          addSDKLog('info', 'Registered: eAgentOfferContactRona listener', null, 'WebexContext');
           
           desktopRef.current.agentContact.addEventListener('eAgentContactHeld', (contact: any) => {
-            addSDKLog('info', 'Contact held', contact, 'WebexContext');
+            addSDKLog('info', '>>> eAgentContactHeld EVENT FIRED <<<', contact, 'WebexContext');
             const taskId = contact.interactionId || contact.id;
             setActiveTasks(prev => prev.map(t => 
               t.taskId === taskId ? { ...t, isHeld: true, state: 'held' } : t
             ));
           });
+          addSDKLog('info', 'Registered: eAgentContactHeld listener', null, 'WebexContext');
           
           desktopRef.current.agentContact.addEventListener('eAgentContactUnHeld', (contact: any) => {
-            addSDKLog('info', 'Contact unheld', contact, 'WebexContext');
+            addSDKLog('info', '>>> eAgentContactUnHeld EVENT FIRED <<<', contact, 'WebexContext');
             const taskId = contact.interactionId || contact.id;
             setActiveTasks(prev => prev.map(t => 
               t.taskId === taskId ? { ...t, isHeld: false, state: 'connected' } : t
             ));
           });
+          addSDKLog('info', 'Registered: eAgentContactUnHeld listener', null, 'WebexContext');
           
           desktopRef.current.agentContact.addEventListener('eCallRecordingStarted', (contact: any) => {
-            addSDKLog('info', 'Recording started', contact, 'WebexContext');
+            addSDKLog('info', '>>> eCallRecordingStarted EVENT FIRED <<<', contact, 'WebexContext');
             const taskId = contact.interactionId || contact.id;
             setActiveTasks(prev => prev.map(t => 
               t.taskId === taskId ? { ...t, isRecording: true } : t
             ));
           });
+          addSDKLog('info', 'Registered: eCallRecordingStarted listener', null, 'WebexContext');
           
           addSDKLog('info', 'SDK initialization complete - all event listeners registered', null, 'WebexContext');
           
@@ -662,19 +690,37 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   
   // Handle incoming contact offer
   const handleIncomingContact = (contact: any) => {
+    // DIAGNOSTIC: Log full contact payload to verify real data is coming through
+    addSDKLog('info', 'handleIncomingContact called with full payload', {
+      fullPayload: contact,
+      interactionId: contact.interactionId,
+      id: contact.id,
+      ani: contact.ani,
+      from: contact.from,
+      mediaType: contact.mediaType,
+      queueName: contact.queueName,
+      ronaTimeout: contact.ronaTimeout,
+      contactKeys: Object.keys(contact || {}),
+    }, 'WebexContext');
+    console.log('[WebexCC] handleIncomingContact - FULL PAYLOAD:', JSON.stringify(contact, null, 2));
+    
     const taskId = contact.interactionId || contact.id || `task-${Date.now()}`;
-    setIncomingTask({
+    const incomingTaskData = {
       taskId,
       mediaType: mapMediaType(contact.mediaType),
       ani: contact.ani || contact.from || 'Unknown',
       queueName: contact.queueName || 'Unknown Queue',
       ronaTimeout: contact.ronaTimeout || 15,
       startTime: Date.now(),
-    });
+    };
+    
+    addSDKLog('info', 'Setting incomingTask state', incomingTaskData, 'WebexContext');
+    setIncomingTask(incomingTaskData);
     
     // RONA timer
     const timeout = (contact.ronaTimeout || 15) * 1000;
     ronaTimerRef.current = setTimeout(() => {
+      addSDKLog('info', 'RONA timeout triggered', { taskId }, 'WebexContext');
       setIncomingTask(null);
       setAgentStateInfo(prev => prev ? { ...prev, state: 'RONA' } : null);
     }, timeout);
@@ -682,8 +728,26 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   
   // Handle contact assigned (accepted)
   const handleContactAssigned = (contact: any) => {
+    // DIAGNOSTIC: Log full contact payload and current state
+    addSDKLog('info', 'handleContactAssigned called with full payload', {
+      fullPayload: contact,
+      interactionId: contact.interactionId,
+      id: contact.id,
+      ani: contact.ani,
+      from: contact.from,
+      mediaType: contact.mediaType,
+      queueName: contact.queueName,
+      mediaResourceId: contact.mediaResourceId,
+      cadVariables: contact.cadVariables,
+      contactKeys: Object.keys(contact || {}),
+      currentIncomingTaskId: incomingTask?.taskId,
+      currentActiveTasksCount: activeTasks.length,
+    }, 'WebexContext');
+    console.log('[WebexCC] handleContactAssigned - FULL PAYLOAD:', JSON.stringify(contact, null, 2));
+    
     if (ronaTimerRef.current) {
       clearTimeout(ronaTimerRef.current);
+      addSDKLog('info', 'Cleared RONA timer', null, 'WebexContext');
     }
     
     const taskId = contact.interactionId || contact.id;
@@ -711,7 +775,13 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       isPostCallConsult: contact.isPostCallConsult || false,
     };
     
-    setActiveTasks(prev => [...prev.filter(t => t.taskId !== taskId), newTask]);
+    addSDKLog('info', 'Creating active task from contact', { taskId, newTask }, 'WebexContext');
+    
+    setActiveTasks(prev => {
+      const updated = [...prev.filter(t => t.taskId !== taskId), newTask];
+      addSDKLog('info', 'Updated activeTasks', { previousCount: prev.length, newCount: updated.length }, 'WebexContext');
+      return updated;
+    });
     setSelectedTaskId(taskId);
     setIncomingTask(null);
     
@@ -723,19 +793,21 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     } : null);
     
     // Populate customer profile from contact data
-    setCustomerProfile({
+    const customerProfileData = {
       id: contact.customerId || taskId,
       name: contact.customerName || contact.ani || contact.from || 'Unknown Customer',
       email: contact.customerEmail || '',
       phone: contact.ani || contact.from || '',
       company: contact.company || '',
       isVerified: contact.isVerified || false,
-      tags: [],
-      interactionHistory: [],
+      tags: [] as CustomerTag[],
+      interactionHistory: [] as CallLogEntry[],
       cadVariables: contact.cadVariables || {},
-    });
+    };
+    addSDKLog('info', 'Setting customer profile', customerProfileData, 'WebexContext');
+    setCustomerProfile(customerProfileData);
     
-    addSDKLog('info', `Contact assigned - Agent state set to Engaged`, { taskId, ani: contact.ani }, 'WebexContext');
+    addSDKLog('info', `Contact assigned complete - Agent state set to Engaged`, { taskId, ani: contact.ani }, 'WebexContext');
   };
   
   // Handle contact ended
