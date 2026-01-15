@@ -34,7 +34,7 @@ export function DialpadPopover() {
   const [dialNumber, setDialNumber] = useState('');
   const [selectedEntryPoint, setSelectedEntryPoint] = useState('');
 
-  const isAvailable = agentState?.state === 'Available';
+  const canMakeCall = agentState?.state === 'Available' || agentState?.state === 'Idle';
   const effectiveEntryPoint = selectedEntryPoint || entryPoints[0]?.id || FALLBACK_ENTRY_POINT_ID;
   const isUsingFallback = entryPoints.length === 0 || effectiveEntryPoint === FALLBACK_ENTRY_POINT_ID;
 
@@ -184,10 +184,10 @@ export function DialpadPopover() {
               size="lg"
               className={cn(
                 "h-12 w-12 rounded-full",
-                isAvailable && "bg-state-available hover:bg-state-available/90"
+                canMakeCall && "bg-state-available hover:bg-state-available/90"
               )}
               onClick={handleDial}
-              disabled={!dialNumber || !isAvailable}
+              disabled={!dialNumber || !canMakeCall}
             >
               <Phone className="w-5 h-5" />
             </Button>
@@ -195,9 +195,9 @@ export function DialpadPopover() {
             <div className="w-10" />
           </div>
 
-          {!isAvailable && (
+          {!canMakeCall && (
             <p className="text-center text-xs text-muted-foreground mt-2">
-              Set status to Available to make calls
+              Cannot make calls while {agentState?.state || 'Offline'}
             </p>
           )}
         </div>
