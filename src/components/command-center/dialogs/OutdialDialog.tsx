@@ -23,7 +23,7 @@ export function OutdialDialog({ isOpen, onClose, phoneNumber = '', customerName 
   // Hardcoded fallback entry point ID
   const FALLBACK_ENTRY_POINT_ID = '84f80945-2f92-4086-aead-6a4afbb79dd9';
   
-  const isAvailable = agentState?.state === 'Available';
+  const canMakeCall = agentState?.state === 'Available' || agentState?.state === 'Idle';
   const effectiveEntryPoint = selectedEntryPoint || entryPoints[0]?.id || FALLBACK_ENTRY_POINT_ID;
   const isUsingFallback = entryPoints.length === 0 || effectiveEntryPoint === FALLBACK_ENTRY_POINT_ID;
 
@@ -120,9 +120,9 @@ export function OutdialDialog({ isOpen, onClose, phoneNumber = '', customerName 
           </div>
 
           {/* Agent State Warning */}
-          {!isAvailable && (
+          {!canMakeCall && (
             <p className="text-sm text-destructive flex items-center gap-2 p-2 bg-destructive/10 rounded-lg">
-              Set your status to Available to make calls
+              Cannot make calls while {agentState?.state || 'Offline'}. Set status to Available or Idle.
             </p>
           )}
         </div>
@@ -133,9 +133,9 @@ export function OutdialDialog({ isOpen, onClose, phoneNumber = '', customerName 
           </Button>
           <Button
             onClick={handleDial}
-            disabled={!dialNumber || !effectiveEntryPoint || !isAvailable || isDialing}
+            disabled={!dialNumber || !effectiveEntryPoint || !canMakeCall || isDialing}
             className={cn(
-              isAvailable && "bg-state-available hover:bg-state-available/90"
+              canMakeCall && "bg-state-available hover:bg-state-available/90"
             )}
           >
             <Phone className="w-4 h-4 mr-2" />
