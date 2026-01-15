@@ -446,13 +446,28 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
             // Re-read the full latestData to get complete state and sync config
             const latestData = desktopRef.current?.agentStateInfo?.latestData;
             if (latestData) {
-              const mappedState = mapSdkStateToAgentState(latestData.subStatus || latestData.status || 'Idle');
+              const rawStatus = latestData.status || '';
+              const rawSubStatus = latestData.subStatus || '';
+              const stateToMap = rawSubStatus || rawStatus || 'Idle';
+              const mappedState = mapSdkStateToAgentState(stateToMap);
+              const isEngaged = isEngagedLikeState(stateToMap);
+              
+              // Enhanced diagnostics for hardphone detection
+              addSDKLog('info', '>>> AGENT STATE UPDATE - RAW VALUES <<<', {
+                rawStatus,
+                rawSubStatus,
+                stateToMap,
+                mappedState,
+                isEngagedLike: isEngaged,
+              }, 'WebexContext');
+              console.log('[WebexCC] Agent state mapping:', { rawStatus, rawSubStatus, stateToMap, mappedState, isEngagedLike: isEngaged });
+              
               setAgentStateInfo({
                 state: mappedState,
                 idleCode: latestData.idleCode || (latestData.auxCodeId ? { id: latestData.auxCodeId, name: latestData.auxCodeName || '' } : undefined),
                 lastStateChangeTime: latestData.lastStateChangeTimestamp || Date.now(),
               });
-              addSDKLog('info', `Agent state changed to: ${mappedState}`, { status: latestData.status, subStatus: latestData.subStatus }, 'WebexContext');
+              addSDKLog('info', `Agent state changed to: ${mappedState}`, { status: rawStatus, subStatus: rawSubStatus }, 'WebexContext');
               
               // PROMOTION LOGIC: If agent becomes Engaged and we have an incomingTask, promote it to activeTasks
               // This handles hardphone answer scenarios where eAgentContactAssigned may not fire
@@ -785,28 +800,58 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     }
   }, [addSDKLog]);
   
+  // Check if a state indicates the agent is actively handling a contact
+  // This covers various Webex CC states that indicate an active call/interaction
+  const isEngagedLikeState = (state: string): boolean => {
+    const normalized = state?.toLowerCase() || '';
+    const engagedLikeStates = [
+      'engaged',
+      'connected', 
+      'talking',
+      'oncall',
+      'on call',
+      'on_call',
+      'busy',
+      'reserved',
+      'handling',
+      'ringing',
+      'consulting',
+      'consult',
+    ];
+    return engagedLikeStates.includes(normalized);
+  };
+  
   // Map SDK state strings to our AgentState type
   // SDK uses status/subStatus - status is main state, subStatus provides more detail
-  // Handles both lowercase and uppercase variants for robustness
+  // First checks for "Engaged-like" states to ensure hardphone calls are detected
   const mapSdkStateToAgentState = (sdkState: string): AgentState => {
     const normalized = sdkState?.toLowerCase() || '';
+    
+    // First check if this is an "Engaged-like" state (handles hardphone scenarios)
+    if (isEngagedLikeState(normalized)) {
+      return 'Engaged';
+    }
+    
     const stateMap: Record<string, AgentState> = {
       'available': 'Available',
       'idle': 'Idle',
       'rona': 'RONA',
-      'engaged': 'Engaged',
       'wrapup': 'WrapUp',
       'wrap-up': 'WrapUp',
       'wrap_up': 'WrapUp',
+      'aftercallwork': 'WrapUp',
+      'after_call_work': 'WrapUp',
+      'acw': 'WrapUp',
       'offline': 'Offline',
-      'loggedin': 'Idle', // LoggedIn with subStatus Idle
+      'loggedin': 'Idle',
       'logged_in': 'Idle',
       'loggedout': 'Offline',
       'logged_out': 'Offline',
       'notready': 'Idle',
       'not_ready': 'Idle',
     };
-    return stateMap[normalized] || 'Offline';
+    // Default to Idle instead of Offline for unknown states
+    return stateMap[normalized] || 'Idle';
   };
   
   // Helper to validate if a string is a valid UUID format
