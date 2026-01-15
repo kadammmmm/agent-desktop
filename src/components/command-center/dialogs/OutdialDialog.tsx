@@ -20,23 +20,28 @@ export function OutdialDialog({ isOpen, onClose, phoneNumber = '', customerName 
   const [selectedEntryPoint, setSelectedEntryPoint] = useState('');
   const [isDialing, setIsDialing] = useState(false);
 
+  // Hardcoded fallback entry point ID
+  const FALLBACK_ENTRY_POINT_ID = '84f80945-2f92-4086-aead-6a4afbb79dd9';
+  
   const isAvailable = agentState?.state === 'Available';
+  const effectiveEntryPoint = selectedEntryPoint || entryPoints[0]?.id || FALLBACK_ENTRY_POINT_ID;
+  const isUsingFallback = entryPoints.length === 0 || effectiveEntryPoint === FALLBACK_ENTRY_POINT_ID;
 
   // Reset state when dialog opens with new phone number
   useEffect(() => {
     if (isOpen) {
       setDialNumber(phoneNumber);
-      setSelectedEntryPoint(entryPoints[0]?.id || '');
+      setSelectedEntryPoint(entryPoints[0]?.id || FALLBACK_ENTRY_POINT_ID);
       setIsDialing(false);
     }
   }, [isOpen, phoneNumber, entryPoints]);
 
   const handleDial = async () => {
-    if (!dialNumber || !selectedEntryPoint) return;
+    if (!dialNumber || !effectiveEntryPoint) return;
     
     setIsDialing(true);
     try {
-      await outdial(dialNumber, selectedEntryPoint);
+      await outdial(dialNumber, effectiveEntryPoint);
       onClose();
     } catch (error) {
       console.error('Outdial failed:', error);
@@ -86,13 +91,15 @@ export function OutdialDialog({ isOpen, onClose, phoneNumber = '', customerName 
           {/* Entry Point Selection */}
           <div className="space-y-2">
             <label className="text-sm font-medium">Entry Point</label>
-            <Select value={selectedEntryPoint} onValueChange={setSelectedEntryPoint}>
+            <Select value={effectiveEntryPoint} onValueChange={setSelectedEntryPoint}>
               <SelectTrigger>
                 <SelectValue placeholder="Select entry point" />
               </SelectTrigger>
               <SelectContent>
                 {entryPoints.length === 0 ? (
-                  <SelectItem value="none" disabled>No entry points available</SelectItem>
+                  <SelectItem value={FALLBACK_ENTRY_POINT_ID}>
+                    Default Outdial
+                  </SelectItem>
                 ) : (
                   entryPoints.map(ep => (
                     <SelectItem key={ep.id} value={ep.id}>
@@ -107,6 +114,9 @@ export function OutdialDialog({ isOpen, onClose, phoneNumber = '', customerName 
                 )}
               </SelectContent>
             </Select>
+            {isUsingFallback && (
+              <p className="text-xs text-muted-foreground">Using default entry point</p>
+            )}
           </div>
 
           {/* Agent State Warning */}
@@ -123,7 +133,7 @@ export function OutdialDialog({ isOpen, onClose, phoneNumber = '', customerName 
           </Button>
           <Button
             onClick={handleDial}
-            disabled={!dialNumber || !selectedEntryPoint || !isAvailable || isDialing}
+            disabled={!dialNumber || !effectiveEntryPoint || !isAvailable || isDialing}
             className={cn(
               isAvailable && "bg-state-available hover:bg-state-available/90"
             )}
