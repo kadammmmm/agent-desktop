@@ -430,6 +430,59 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
               addSDKLog('info', `Loaded ${agentInfo.wrapupCodes.length} wrap-up codes from latestData`, null, 'WebexContext');
             }
             
+            // Fetch entry points for outbound dialing
+            try {
+              addSDKLog('info', 'Fetching entry points from SDK...', null, 'WebexContext');
+              
+              // Try multiple methods to get entry points
+              let entryPointsData: any[] | null = null;
+              
+              // Method 1: Try agentContact.entryPoints
+              if (desktopRef.current.agentContact?.entryPoints) {
+                const epModule = desktopRef.current.agentContact.entryPoints;
+                if (typeof epModule.getAllEntryPoints === 'function') {
+                  entryPointsData = await epModule.getAllEntryPoints();
+                } else if (typeof epModule.fetch === 'function') {
+                  entryPointsData = await epModule.fetch();
+                } else if (epModule.data) {
+                  entryPointsData = epModule.data;
+                }
+              }
+              
+              // Method 2: Try from latestData if not found above
+              if (!entryPointsData && agentInfo.entryPoints) {
+                entryPointsData = agentInfo.entryPoints;
+              }
+              
+              // Method 3: Try actions.getEntryPoints if available
+              if (!entryPointsData && desktopRef.current.actions?.getEntryPoints) {
+                entryPointsData = await desktopRef.current.actions.getEntryPoints();
+              }
+              
+              if (entryPointsData && Array.isArray(entryPointsData) && entryPointsData.length > 0) {
+                const mappedEntryPoints: EntryPoint[] = entryPointsData.map((ep: any) => ({
+                  id: ep.id || ep.entryPointId || ep.entrypointId || '',
+                  name: ep.name || ep.entryPointName || ep.entrypointName || 'Unknown Entry Point',
+                  description: ep.description || ep.address || ep.mediaType || '',
+                }));
+                setEntryPoints(mappedEntryPoints);
+                addSDKLog('info', `Loaded ${mappedEntryPoints.length} entry points from SDK`, 
+                  { entryPoints: mappedEntryPoints.map(ep => ({ id: ep.id, name: ep.name })) }, 
+                  'WebexContext'
+                );
+                console.log('[WebexCC] Entry points loaded:', mappedEntryPoints.length, mappedEntryPoints);
+              } else {
+                addSDKLog('warn', 'No entry points returned from SDK - outdial may require manual entry point configuration', null, 'WebexContext');
+                console.warn('[WebexCC] No entry points found in SDK');
+              }
+            } catch (epError) {
+              addSDKLog('warn', 'Failed to fetch entry points - outdial may be unavailable', 
+                { error: epError instanceof Error ? epError.message : String(epError) }, 
+                'WebexContext'
+              );
+              console.warn('[WebexCC] Failed to fetch entry points:', epError);
+            }
+            
             console.log('[WebexCC] Agent info loaded:', agentInfo.agentName, 'State:', mappedState);
           } else {
             addSDKLog('warn', 'Agent data not ready after waiting', null, 'WebexContext');
