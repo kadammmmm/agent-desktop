@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
+import { OutdialDialog } from '../dialogs/OutdialDialog';
 import {
   User, Phone, Mail, MapPin, Building, CheckCircle2,
   ChevronDown, ChevronUp, Edit2, Save, X, Plus,
@@ -23,6 +24,7 @@ export function Customer360Enhanced() {
     interactionHistory,
     updateCADVariable,
     addCustomerNote,
+    entryPoints,
   } = useWebex();
 
   const task = activeTasks.find(t => t.taskId === selectedTaskId);
@@ -31,6 +33,7 @@ export function Customer360Enhanced() {
   const [cadEdits, setCadEdits] = useState<Record<string, string>>({});
   const [newNote, setNewNote] = useState('');
   const [showNoteInput, setShowNoteInput] = useState(false);
+  const [dialDialogOpen, setDialDialogOpen] = useState(false);
 
   const toggleSection = (section: string) => {
     setExpandedSections(prev =>
@@ -150,11 +153,20 @@ export function Customer360Enhanced() {
           {expandedSections.includes('contact') && (
             <div className="px-3 pb-3 space-y-3">
               {customerProfile.phone && (
-                <div className="flex items-center gap-3 text-sm">
-                  <Phone className="w-4 h-4 text-muted-foreground shrink-0" />
-                  <a href={`tel:${customerProfile.phone}`} className="hover:text-primary transition-colors">
-                    {customerProfile.phone}
-                  </a>
+                <div className="flex items-center justify-between text-sm">
+                  <div className="flex items-center gap-3">
+                    <Phone className="w-4 h-4 text-muted-foreground shrink-0" />
+                    <span>{customerProfile.phone}</span>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-state-available hover:bg-state-available/10"
+                    onClick={() => setDialDialogOpen(true)}
+                  >
+                    <PhoneCall className="w-3 h-3 mr-1" />
+                    Call
+                  </Button>
                 </div>
               )}
               {customerProfile.email && (
@@ -371,6 +383,14 @@ export function Customer360Enhanced() {
           )}
         </div>
       </div>
+
+      {/* Outdial Dialog */}
+      <OutdialDialog
+        isOpen={dialDialogOpen}
+        onClose={() => setDialDialogOpen(false)}
+        phoneNumber={customerProfile.phone}
+        customerName={customerProfile.name}
+      />
     </ScrollArea>
   );
 }

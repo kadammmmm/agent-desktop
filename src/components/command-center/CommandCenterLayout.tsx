@@ -8,6 +8,7 @@ import { ChannelQuickAccess } from './ChannelQuickAccess';
 import { QueueToggle } from './QueueToggle';
 import { DemoControlPanel } from './DemoControlPanel';
 import { Customer360Enhanced } from './enhanced-panels/Customer360Enhanced';
+import { CustomerDirectoryPanel } from './panels/CustomerDirectoryPanel';
 import { TransferConsultPanel } from './panels/TransferConsultPanel';
 import { AgentMetricsDashboard } from './panels/AgentMetricsDashboard';
 import { SettingsPanel } from './panels/SettingsPanel';
@@ -20,7 +21,7 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { cn } from '@/lib/utils';
 
 export function CommandCenterLayout() {
-  const { agentProfile, sdkLogs, clearSDKLogs, exportSDKLogs, initialize, isInitialized } = useWebex();
+  const { agentProfile, sdkLogs, clearSDKLogs, exportSDKLogs, initialize, isInitialized, activeTasks, customerProfile } = useWebex();
   const [activeSection, setActiveSection] = useState<NavigationSection>('interactions');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showContextPanel, setShowContextPanel] = useState(true);
@@ -79,9 +80,17 @@ export function CommandCenterLayout() {
         );
 
       case 'customer':
+        // Show Customer360 if there's an active task with customer data, otherwise show directory
+        const hasActiveCustomer = activeTasks.length > 0 && customerProfile;
         return (
-          <main className="flex-1 overflow-auto bg-background p-4">
-            <Customer360Enhanced />
+          <main className="flex-1 overflow-auto bg-background">
+            {hasActiveCustomer ? (
+              <div className="p-4">
+                <Customer360Enhanced />
+              </div>
+            ) : (
+              <CustomerDirectoryPanel />
+            )}
           </main>
         );
 

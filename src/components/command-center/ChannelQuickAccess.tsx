@@ -1,12 +1,12 @@
 import { Button } from '@/components/ui/button';
-import { MessageSquare, Phone, Mail, Grid3X3 } from 'lucide-react';
+import { MessageSquare, Mail, Grid3X3 } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useWebex } from '@/contexts/WebexContext';
 import { cn } from '@/lib/utils';
+import { DialpadPopover } from './DialpadPopover';
 
 const channels = [
   { id: 'chat', icon: MessageSquare, label: 'Chats' },
-  { id: 'voice', icon: Phone, label: 'Calls' },
   { id: 'email', icon: Mail, label: 'Inbox' },
   { id: 'apps', icon: Grid3X3, label: 'Apps' },
 ];
@@ -21,6 +21,10 @@ export function ChannelQuickAccess() {
 
   return (
     <div className="flex items-center gap-1">
+      {/* Dialpad Button */}
+      <DialpadPopover />
+
+      {/* Channel Buttons */}
       {channels.map(channel => {
         const Icon = channel.icon;
         const count = getChannelCount(channel.id);
