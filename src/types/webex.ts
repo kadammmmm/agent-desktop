@@ -63,6 +63,7 @@ export interface IncomingTask {
   queueName: string;
   ronaTimeout: number;
   startTime: number;
+  customerName?: string;
 }
 
 export interface TransferTarget {

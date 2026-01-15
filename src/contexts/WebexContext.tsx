@@ -454,6 +454,105 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
               });
               addSDKLog('info', `Agent state changed to: ${mappedState}`, { status: latestData.status, subStatus: latestData.subStatus }, 'WebexContext');
               
+              // PROMOTION LOGIC: If agent becomes Engaged and we have an incomingTask, promote it to activeTasks
+              // This handles hardphone answer scenarios where eAgentContactAssigned may not fire
+              if (mappedState === 'Engaged') {
+                setIncomingTask(currentIncoming => {
+                  if (currentIncoming) {
+                    addSDKLog('info', '>>> PROMOTION: Agent Engaged with incomingTask - promoting to activeTasks <<<', {
+                      taskId: currentIncoming.taskId,
+                      ani: currentIncoming.ani,
+                      customerName: currentIncoming.customerName,
+                    }, 'WebexContext');
+                    
+                    // Clear RONA timer if any
+                    if (ronaTimerRef.current) {
+                      clearTimeout(ronaTimerRef.current);
+                      ronaTimerRef.current = null;
+                    }
+                    
+                    // Get raw contact data if stored, otherwise use incomingTask data
+                    const rawContact = (currentIncoming as any)._rawContact;
+                    
+                    const promotedTask: Task = {
+                      taskId: currentIncoming.taskId,
+                      mediaType: currentIncoming.mediaType,
+                      mediaChannel: rawContact?.mediaChannel || (currentIncoming.mediaType === 'voice' ? 'telephony' : currentIncoming.mediaType),
+                      state: 'connected',
+                      direction: rawContact?.direction as 'inbound' | 'outbound' || 'inbound',
+                      queueName: currentIncoming.queueName,
+                      ani: currentIncoming.ani,
+                      dnis: rawContact?.dnis || '',
+                      startTime: currentIncoming.startTime,
+                      isRecording: rawContact?.isRecording || false,
+                      isMuted: false,
+                      isHeld: false,
+                      wrapUpRequired: true,
+                      cadVariables: rawContact?.cadVariables || {},
+                      customerName: currentIncoming.customerName,
+                      customerEmail: rawContact?.customerEmail,
+                      customerPhone: rawContact?.customerPhone || currentIncoming.ani,
+                      mediaResourceId: rawContact?.mediaResourceId,
+                      isConsult: false,
+                      isPostCallConsult: false,
+                    };
+                    
+                    // Add to activeTasks
+                    setActiveTasks(prev => {
+                      // Don't add if already exists
+                      if (prev.some(t => t.taskId === promotedTask.taskId)) {
+                        addSDKLog('info', 'Task already in activeTasks, skipping promotion', { taskId: promotedTask.taskId }, 'WebexContext');
+                        return prev;
+                      }
+                      addSDKLog('info', 'Adding promoted task to activeTasks', { taskId: promotedTask.taskId }, 'WebexContext');
+                      return [...prev, promotedTask];
+                    });
+                    setSelectedTaskId(promotedTask.taskId);
+                    
+                    // Populate customer profile
+                    setCustomerProfile({
+                      id: promotedTask.taskId,
+                      name: promotedTask.customerName || promotedTask.ani || 'Unknown Customer',
+                      email: promotedTask.customerEmail || '',
+                      phone: promotedTask.customerPhone || promotedTask.ani || '',
+                      company: rawContact?.company || '',
+                      isVerified: false,
+                      tags: [] as CustomerTag[],
+                      interactionHistory: [] as CallLogEntry[],
+                      cadVariables: promotedTask.cadVariables || {},
+                    });
+                    
+                    // Return null to clear incomingTask
+                    return null;
+                  }
+                  return currentIncoming;
+                });
+                
+                // Also try getTaskMap when agent becomes Engaged to catch any missed tasks
+                (async () => {
+                  try {
+                    addSDKLog('info', 'Agent Engaged - attempting getTaskMap sync...', null, 'WebexContext');
+                    const actionsAvailable = desktopRef.current?.actions;
+                    addSDKLog('debug', 'Desktop.actions availability', {
+                      hasActions: !!actionsAvailable,
+                      actionKeys: actionsAvailable ? Object.keys(actionsAvailable) : [],
+                      getTaskMapType: typeof actionsAvailable?.getTaskMap,
+                    }, 'WebexContext');
+                    
+                    if (actionsAvailable?.getTaskMap) {
+                      const taskMap = await actionsAvailable.getTaskMap();
+                      addSDKLog('info', 'getTaskMap on Engaged result', {
+                        taskMapType: typeof taskMap,
+                        taskMapKeys: taskMap ? Object.keys(taskMap) : [],
+                        taskMap,
+                      }, 'WebexContext');
+                    }
+                  } catch (e) {
+                    addSDKLog('warn', 'getTaskMap on Engaged failed', e, 'WebexContext');
+                  }
+                })();
+              }
+              
               // Also sync idleCodes and wrapUpCodes if they've been populated
               if (latestData.idleCodes && Array.isArray(latestData.idleCodes) && latestData.idleCodes.length > 0) {
                 setIdleCodes(latestData.idleCodes.map((code: any) => ({
@@ -762,7 +861,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       dnis: callAssociatedDetails?.dn || interaction?.dnis || callProcessingDetails?.dnis || '',
       queueName: callAssociatedDetails?.virtualTeamName || callProcessingDetails?.virtualTeamName || interaction?.queueName || '',
       ronaTimeout: parseInt(callAssociatedDetails?.ronaTimeout || '15'),
-      direction: interaction?.contactDirection?.type?.toLowerCase() === 'inbound' ? 'inbound' : 'outbound' as const,
+      direction: interaction?.contactDirection?.type?.toLowerCase() === 'inbound' ? 'inbound' : 'outbound',
       state: interaction?.state || 'connected',
       customerName: callAssociatedData?.L_Caller_Name?.value || callAssociatedData?.G_Customer_Name?.value || '',
       customerEmail: callAssociatedData?.Customer_Email?.value || '',
@@ -771,6 +870,8 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       cadVariables,
       mediaChannel: interaction?.mediaChannel || 'telephony',
       isRecording: callProcessingDetails?.recordInProgress === 'true',
+      // Use SDK timestamp when available for accurate timing
+      createdTimestamp: interaction?.createdTimestamp || event?.data?.eventTime || null,
       raw: interaction, // Keep raw data for debugging
     };
   };
@@ -789,26 +890,42 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     console.log('[WebexCC] handleIncomingContact - EXTRACTED:', JSON.stringify(contact, null, 2));
     
     const taskId = contact.interactionId || `task-${Date.now()}`;
+    // Use SDK timestamp if available, otherwise current time
+    const startTime = contact.createdTimestamp || Date.now();
+    
     const incomingTaskData = {
       taskId,
       mediaType: mapMediaType(contact.mediaType),
       ani: contact.ani || 'Unknown',
       queueName: contact.queueName || 'Unknown Queue',
       ronaTimeout: contact.ronaTimeout || 15,
-      startTime: Date.now(),
+      startTime,
       customerName: contact.customerName,
+      // Store full contact data for later promotion to activeTasks
+      _rawContact: contact,
     };
     
     addSDKLog('info', 'Setting incomingTask state with real data', incomingTaskData, 'WebexContext');
-    setIncomingTask(incomingTaskData);
+    setIncomingTask(incomingTaskData as any);
     
-    // RONA timer
-    const timeout = (contact.ronaTimeout || 15) * 1000;
-    ronaTimerRef.current = setTimeout(() => {
-      addSDKLog('info', 'RONA timeout triggered', { taskId }, 'WebexContext');
-      setIncomingTask(null);
-      setAgentStateInfo(prev => prev ? { ...prev, state: 'RONA' } : null);
-    }, timeout);
+    // Clear any existing RONA timer
+    if (ronaTimerRef.current) {
+      clearTimeout(ronaTimerRef.current);
+      ronaTimerRef.current = null;
+    }
+    
+    // RONA timer - ONLY in demo mode
+    // In production, rely on SDK's eAgentOfferContactRona event for RONA handling
+    if (runningInDemoMode) {
+      const timeout = (contact.ronaTimeout || 15) * 1000;
+      ronaTimerRef.current = setTimeout(() => {
+        addSDKLog('info', 'RONA timeout triggered (demo mode)', { taskId }, 'WebexContext');
+        setIncomingTask(null);
+        setAgentStateInfo(prev => prev ? { ...prev, state: 'RONA' } : null);
+      }, timeout);
+    } else {
+      addSDKLog('info', 'Production mode - relying on SDK for RONA handling, no local timer', { taskId }, 'WebexContext');
+    }
   };
   
   // Handle contact assigned (accepted)
