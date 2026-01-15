@@ -430,12 +430,19 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
               addSDKLog('info', `Loaded ${agentInfo.wrapupCodes.length} wrap-up codes from latestData`, null, 'WebexContext');
             }
             
+            // Hardcoded fallback entry point for outbound dialing
+            const FALLBACK_OUTDIAL_ENTRY_POINT: EntryPoint = {
+              id: '84f80945-2f92-4086-aead-6a4afbb79dd9',
+              name: 'Default Outdial',
+              description: 'Primary outbound entry point'
+            };
+            
             // Fetch entry points for outbound dialing
             try {
               addSDKLog('info', 'Fetching entry points from SDK...', null, 'WebexContext');
               
               // Try multiple methods to get entry points
-              let entryPointsData: any[] | null = null;
+              let entryPointsData: any = null;
               
               // Method 1: Try agentContact.entryPoints
               if (desktopRef.current.agentContact?.entryPoints) {
@@ -459,8 +466,23 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
                 entryPointsData = await desktopRef.current.actions.getEntryPoints();
               }
               
-              if (entryPointsData && Array.isArray(entryPointsData) && entryPointsData.length > 0) {
-                const mappedEntryPoints: EntryPoint[] = entryPointsData.map((ep: any) => ({
+              // Debug: log what we got back
+              console.log('[WebexCC] Raw entry points response:', typeof entryPointsData, entryPointsData);
+              addSDKLog('info', `Entry points raw response type: ${typeof entryPointsData}`, 
+                { keys: entryPointsData ? Object.keys(entryPointsData) : 'null' }, 'WebexContext');
+              
+              // Normalize: handle object wrapper formats like { data: [...] } or { entryPoints: [...] }
+              let entryPointsArray: any[] | null = null;
+              if (Array.isArray(entryPointsData)) {
+                entryPointsArray = entryPointsData;
+              } else if (entryPointsData?.data && Array.isArray(entryPointsData.data)) {
+                entryPointsArray = entryPointsData.data;
+              } else if (entryPointsData?.entryPoints && Array.isArray(entryPointsData.entryPoints)) {
+                entryPointsArray = entryPointsData.entryPoints;
+              }
+              
+              if (entryPointsArray && entryPointsArray.length > 0) {
+                const mappedEntryPoints: EntryPoint[] = entryPointsArray.map((ep: any) => ({
                   id: ep.id || ep.entryPointId || ep.entrypointId || '',
                   name: ep.name || ep.entryPointName || ep.entrypointName || 'Unknown Entry Point',
                   description: ep.description || ep.address || ep.mediaType || '',
@@ -472,15 +494,20 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
                 );
                 console.log('[WebexCC] Entry points loaded:', mappedEntryPoints.length, mappedEntryPoints);
               } else {
-                addSDKLog('warn', 'No entry points returned from SDK - outdial may require manual entry point configuration', null, 'WebexContext');
-                console.warn('[WebexCC] No entry points found in SDK');
+                // Use hardcoded fallback entry point
+                setEntryPoints([FALLBACK_OUTDIAL_ENTRY_POINT]);
+                addSDKLog('warn', 'No entry points from SDK - using hardcoded fallback entry point', 
+                  { fallback: FALLBACK_OUTDIAL_ENTRY_POINT }, 'WebexContext');
+                console.warn('[WebexCC] Using fallback entry point:', FALLBACK_OUTDIAL_ENTRY_POINT);
               }
             } catch (epError) {
-              addSDKLog('warn', 'Failed to fetch entry points - outdial may be unavailable', 
-                { error: epError instanceof Error ? epError.message : String(epError) }, 
+              // Use hardcoded fallback entry point on error
+              setEntryPoints([FALLBACK_OUTDIAL_ENTRY_POINT]);
+              addSDKLog('warn', 'Failed to fetch entry points - using hardcoded fallback', 
+                { error: epError instanceof Error ? epError.message : String(epError), fallback: FALLBACK_OUTDIAL_ENTRY_POINT }, 
                 'WebexContext'
               );
-              console.warn('[WebexCC] Failed to fetch entry points:', epError);
+              console.warn('[WebexCC] Failed to fetch entry points, using fallback:', epError);
             }
             
             console.log('[WebexCC] Agent info loaded:', agentInfo.agentName, 'State:', mappedState);

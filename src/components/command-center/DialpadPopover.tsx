@@ -25,6 +25,9 @@ const dialpadKeys = [
   { digit: '#', letters: '' },
 ];
 
+// Hardcoded fallback entry point ID
+const FALLBACK_ENTRY_POINT_ID = '84f80945-2f92-4086-aead-6a4afbb79dd9';
+
 export function DialpadPopover() {
   const { entryPoints, recentOutboundCalls, outdial, agentState } = useWebex();
   const [isOpen, setIsOpen] = useState(false);
@@ -32,6 +35,8 @@ export function DialpadPopover() {
   const [selectedEntryPoint, setSelectedEntryPoint] = useState('');
 
   const isAvailable = agentState?.state === 'Available';
+  const effectiveEntryPoint = selectedEntryPoint || entryPoints[0]?.id || FALLBACK_ENTRY_POINT_ID;
+  const isUsingFallback = entryPoints.length === 0 || effectiveEntryPoint === FALLBACK_ENTRY_POINT_ID;
 
   const handleKeyPress = (digit: string) => {
     if (digit === '0' && dialNumber === '') {
@@ -46,10 +51,9 @@ export function DialpadPopover() {
   };
 
   const handleDial = async () => {
-    const entryPointToUse = selectedEntryPoint || entryPoints[0]?.id;
-    if (!dialNumber || !entryPointToUse) return;
+    if (!dialNumber || !effectiveEntryPoint) return;
     
-    await outdial(dialNumber, entryPointToUse);
+    await outdial(dialNumber, effectiveEntryPoint);
     setDialNumber('');
     setIsOpen(false);
   };
@@ -98,20 +102,29 @@ export function DialpadPopover() {
         <div className="p-3 border-b border-border">
           <label className="text-xs text-muted-foreground mb-1.5 block">Entry Point</label>
           <Select 
-            value={selectedEntryPoint || entryPoints[0]?.id} 
+            value={effectiveEntryPoint} 
             onValueChange={setSelectedEntryPoint}
           >
             <SelectTrigger className="h-9">
               <SelectValue placeholder="Select entry point" />
             </SelectTrigger>
             <SelectContent>
-              {entryPoints.map(ep => (
-                <SelectItem key={ep.id} value={ep.id}>
-                  {ep.name}
+              {entryPoints.length === 0 ? (
+                <SelectItem value={FALLBACK_ENTRY_POINT_ID}>
+                  Default Outdial
                 </SelectItem>
-              ))}
+              ) : (
+                entryPoints.map(ep => (
+                  <SelectItem key={ep.id} value={ep.id}>
+                    {ep.name}
+                  </SelectItem>
+                ))
+              )}
             </SelectContent>
           </Select>
+          {isUsingFallback && (
+            <p className="text-xs text-muted-foreground mt-1">Using default entry point</p>
+          )}
         </div>
 
         {/* Number Display */}
@@ -174,7 +187,7 @@ export function DialpadPopover() {
                 isAvailable && "bg-state-available hover:bg-state-available/90"
               )}
               onClick={handleDial}
-              disabled={!dialNumber || !isAvailable || entryPoints.length === 0}
+              disabled={!dialNumber || !isAvailable}
             >
               <Phone className="w-5 h-5" />
             </Button>
