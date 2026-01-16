@@ -430,12 +430,28 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
               addSDKLog('info', `Loaded ${agentInfo.wrapupCodes.length} wrap-up codes from latestData`, null, 'WebexContext');
             }
             
-            // Hardcoded fallback entry point for outbound dialing
+            // Hardcoded fallback IDs for outbound dialing
+            // Entry Point ID: identifies the outbound dial configuration
+            // Outdial ANI ID: specifies the caller ID (ANI) for outbound calls
+            const FALLBACK_ENTRY_POINT_ID = 'c97bf9ea-ca01-4e43-ad45-89c20055179b';
+            const FALLBACK_OUTDIAL_ANI_ID = '84f80945-2f92-4086-aead-6a4afbb79dd9';
+            
             const FALLBACK_OUTDIAL_ENTRY_POINT: EntryPoint = {
-              id: '84f80945-2f92-4086-aead-6a4afbb79dd9',
+              id: FALLBACK_ENTRY_POINT_ID,
               name: 'Default Outdial',
               description: 'Primary outbound entry point'
             };
+            
+            // Log outbound configuration for debugging
+            addSDKLog('info', 'Outbound configuration loaded', {
+              entryPointId: FALLBACK_ENTRY_POINT_ID,
+              outdialAniId: FALLBACK_OUTDIAL_ANI_ID,
+              isOutboundEnabledForAgent: agentInfo?.isOutboundEnabledForAgent,
+              isOutboundEnabledForTenant: agentInfo?.isOutboundEnabledForTenant,
+              isAdhocDialingEnabled: agentInfo?.isAdhocDialingEnabled,
+              outDialEp: agentInfo?.outDialEp,
+              outdialANIId: agentInfo?.outdialANIId,
+            }, 'Outbound');
             
             // Fetch entry points for outbound dialing
             try {
@@ -778,6 +794,26 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
             ));
           });
           addSDKLog('info', 'Registered: eCallRecordingStarted listener', null, 'WebexContext');
+          
+          // Listen for outdial failures
+          try {
+            if (desktopRef.current.dialer) {
+              desktopRef.current.dialer.addEventListener('eOutdialFailed', (event: any) => {
+                console.error('[WebexCC] >>> eOutdialFailed EVENT FIRED <<<', event);
+                addSDKLog('error', '>>> eOutdialFailed EVENT FIRED <<<', {
+                  reason: event?.data?.reason || event?.reason || 'Unknown',
+                  trackingId: event?.data?.trackingId || event?.trackingId,
+                  errorCode: event?.data?.errorCode || event?.errorCode,
+                  payload: event?.data || event,
+                }, 'Dialer');
+              });
+              addSDKLog('info', 'Registered: eOutdialFailed listener (dialer module)', null, 'WebexContext');
+            } else {
+              addSDKLog('warn', 'Dialer module not available - eOutdialFailed listener not registered', null, 'WebexContext');
+            }
+          } catch (e) {
+            addSDKLog('warn', 'Could not register eOutdialFailed listener', { error: e instanceof Error ? e.message : String(e) }, 'WebexContext');
+          }
           
           addSDKLog('info', 'SDK initialization complete - all event listeners registered', null, 'WebexContext');
           
@@ -1837,23 +1873,64 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     console.log('[WebexCC] Conference started');
   }, [runningInDemoMode]);
 
-  // Outdial
+  // Outdial - Correct Entry Point and ANI IDs
+  const OUTDIAL_ENTRY_POINT_ID = 'c97bf9ea-ca01-4e43-ad45-89c20055179b';
+  const OUTDIAL_ANI_ID = '84f80945-2f92-4086-aead-6a4afbb79dd9';
+  
   const outdial = useCallback(async (dialNumber: string, entryPointId: string) => {
+    // Normalize phone number: trim spaces, remove internal spaces
+    const normalizedNumber = dialNumber.trim().replace(/\s+/g, '');
+    
+    addSDKLog('info', 'Initiating outdial', { 
+      rawDialNumber: dialNumber,
+      normalizedNumber,
+      entryPointId, 
+      outdialAniId: OUTDIAL_ANI_ID,
+      demoMode: runningInDemoMode 
+    }, 'Outdial');
+    
     try {
       if (!runningInDemoMode && desktopRef.current) {
-        console.log('[WebexCC] Outdialing via SDK:', dialNumber, entryPointId);
+        console.log('[WebexCC] Outdialing via SDK:', normalizedNumber, entryPointId, OUTDIAL_ANI_ID);
+        addSDKLog('info', 'Calling SDK agentContact.outdial()', {
+          destination: normalizedNumber,
+          entryPointId,
+          outdialAniId: OUTDIAL_ANI_ID,
+        }, 'Outdial');
+        
+        // Use the complete payload structure required by Webex CC SDK
         await desktopRef.current.agentContact.outdial({
-          dialNumber: dialNumber,
           entryPointId: entryPointId,
+          destination: normalizedNumber,
+          direction: 'outbound',
+          outboundType: 'adhoc',
+          mediaType: 'telephony',
+          attributes: {
+            outdialAniId: OUTDIAL_ANI_ID
+          }
         });
-        // Contact will be created via event listener
+        
+        addSDKLog('info', 'Outdial request sent successfully', { 
+          destination: normalizedNumber,
+          entryPointId,
+        }, 'Outdial');
+        // Contact will be created via event listener (eAgentOfferContact / eAgentContactAssigned)
         return;
       }
     } catch (error) {
       console.error('[WebexCC] Outdial failed:', error);
+      addSDKLog('error', 'Outdial SDK call failed', { 
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        dialNumber: normalizedNumber,
+        entryPointId,
+        outdialAniId: OUTDIAL_ANI_ID,
+      }, 'Outdial');
+      throw error; // Re-throw so UI can show error
     }
     
-    // Demo mode or fallback
+    // Demo mode fallback - create mock outbound task
+    addSDKLog('info', 'Demo mode - creating mock outbound task', { dialNumber: normalizedNumber }, 'Outdial');
     const entryPoint = entryPoints.find(ep => ep.id === entryPointId);
     const newTask: Task = {
       taskId: `outbound-${Date.now()}`,
@@ -1863,7 +1940,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       direction: 'outbound',
       queueName: 'Outbound',
       ani: agentProfile?.dialNumber || '',
-      dnis: dialNumber,
+      dnis: normalizedNumber,
       startTime: Date.now(),
       isRecording: false,
       isMuted: false,
@@ -1875,7 +1952,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     // Add to recent calls
     setRecentOutboundCalls(prev => [
       {
-        number: dialNumber,
+        number: normalizedNumber,
         timestamp: Date.now(),
         duration: 0,
         entryPointId,
@@ -1887,8 +1964,8 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     setActiveTasks(prev => [...prev, newTask]);
     setSelectedTaskId(newTask.taskId);
     setAgentStateInfo(prev => prev ? { ...prev, state: 'Engaged' } : null);
-    console.log('[WebexCC] Outdial to:', dialNumber);
-  }, [agentProfile?.dialNumber, entryPoints, runningInDemoMode]);
+    console.log('[WebexCC] Outdial to:', normalizedNumber);
+  }, [agentProfile?.dialNumber, entryPoints, runningInDemoMode, addSDKLog]);
 
   // Recording controls
   const startRecording = useCallback(async (taskId: string) => {

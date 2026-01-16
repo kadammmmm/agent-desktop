@@ -25,8 +25,8 @@ const dialpadKeys = [
   { digit: '#', letters: '' },
 ];
 
-// Hardcoded fallback entry point ID
-const FALLBACK_ENTRY_POINT_ID = '84f80945-2f92-4086-aead-6a4afbb79dd9';
+// Hardcoded fallback entry point ID (correct value for outdial)
+const FALLBACK_ENTRY_POINT_ID = 'c97bf9ea-ca01-4e43-ad45-89c20055179b';
 
 export function DialpadPopover() {
   const { entryPoints, recentOutboundCalls, outdial, agentState } = useWebex();
