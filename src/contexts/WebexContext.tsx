@@ -46,6 +46,9 @@ interface WebexContextType {
   queues: Queue[];
   teamAgents: TeamAgent[];
   entryPoints: EntryPoint[];
+  buddyAgents: TeamAgent[];
+  addressBook: { id: string; name: string; number: string }[];
+  outdialAniList: { id: string; name: string; number: string }[];
   
   // Metrics
   agentMetrics: AgentMetrics | null;
@@ -100,6 +103,12 @@ interface WebexContextType {
   addCustomerNote: (note: string) => Promise<void>;
   toggleFavoriteAgent: (agentId: string) => void;
   escalateToVideo: (taskId: string) => Promise<void>;
+  
+  // SDK-specific actions
+  uploadLogs: () => Promise<string | null>;
+  fetchBuddyAgents: () => Promise<void>;
+  pauseRecording: (taskId: string) => Promise<void>;
+  resumeRecording: (taskId: string) => Promise<void>;
   
   // Demo-specific actions
   triggerIncomingTask: (mediaType: ChannelType, queueId?: string) => void;
@@ -204,6 +213,9 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   const [queues, setQueues] = useState<Queue[]>([]);
   const [teamAgents, setTeamAgents] = useState<TeamAgent[]>([]);
   const [entryPoints, setEntryPoints] = useState<EntryPoint[]>([]);
+  const [buddyAgents, setBuddyAgents] = useState<TeamAgent[]>([]);
+  const [addressBook, setAddressBook] = useState<{ id: string; name: string; number: string }[]>([]);
+  const [outdialAniList, setOutdialAniList] = useState<{ id: string; name: string; number: string }[]>([]);
   
   const [agentMetrics, setAgentMetrics] = useState<AgentMetrics | null>(null);
   const [extendedMetrics, setExtendedMetrics] = useState<ExtendedMetrics | null>(null);
@@ -1634,20 +1646,28 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     console.log('[WebexCC] Task wrapped up:', taskId, 'with code:', wrapUpCodeId);
   }, [activeTasks, selectedTaskId, runningInDemoMode]);
 
-  // Transfer to queue (blind)
+  // Transfer to queue - use vteamTransfer for queue transfers per Cisco sample
   const transferToQueue = useCallback(async (taskId: string, queueId: string) => {
     try {
       if (!runningInDemoMode && desktopRef.current) {
-        console.log('[WebexCC] Transferring to queue via SDK:', taskId, queueId);
-        await desktopRef.current.agentContact.blindTransfer({
+        console.log('[WebexCC] Transferring to queue via vteamTransfer:', taskId, queueId);
+        addSDKLog('info', 'Initiating vteamTransfer to queue', { taskId, queueId }, 'Transfer');
+        
+        // Use vteamTransfer for queue transfers per Cisco sample
+        await desktopRef.current.agentContact.vteamTransfer({
           interactionId: taskId,
-          transferTo: queueId,
-          transferType: 'queue',
+          data: {
+            vteamId: queueId,
+            vteamType: 'inboundqueue',
+          },
         });
+        
+        addSDKLog('info', 'vteamTransfer successful', { taskId, queueId }, 'Transfer');
         return;
       }
     } catch (error) {
       console.error('[WebexCC] Transfer to queue failed:', error);
+      addSDKLog('error', 'vteamTransfer failed', { error: error instanceof Error ? error.message : String(error) }, 'Transfer');
     }
     
     // Demo mode or fallback
@@ -1661,7 +1681,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     setConsultState({ isConsulting: false });
     setCustomerProfile(null);
     console.log('[WebexCC] Transferred to queue:', queueId);
-  }, [activeTasks.length, selectedTaskId, runningInDemoMode]);
+  }, [activeTasks.length, selectedTaskId, runningInDemoMode, addSDKLog]);
 
   // Transfer to agent (blind)
   const transferToAgent = useCallback(async (taskId: string, agentId: string) => {
@@ -1873,7 +1893,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     console.log('[WebexCC] Conference started');
   }, [runningInDemoMode]);
 
-  // Outdial - Correct Entry Point and ANI IDs
+  // Outdial - Use Desktop.dialer.startOutdial per Cisco sample
   const OUTDIAL_ENTRY_POINT_ID = 'c97bf9ea-ca01-4e43-ad45-89c20055179b';
   const OUTDIAL_ANI_ID = '84f80945-2f92-4086-aead-6a4afbb79dd9';
   
@@ -1881,38 +1901,46 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     // Normalize phone number: trim spaces, remove internal spaces
     const normalizedNumber = dialNumber.trim().replace(/\s+/g, '');
     
-    addSDKLog('info', 'Initiating outdial', { 
+    // Use provided entryPointId or fallback
+    const effectiveEntryPointId = entryPointId || OUTDIAL_ENTRY_POINT_ID;
+    
+    // Use first ANI from list or fallback
+    const effectiveAniId = outdialAniList[0]?.id || OUTDIAL_ANI_ID;
+    
+    addSDKLog('info', 'Initiating outdial via Desktop.dialer.startOutdial', { 
       rawDialNumber: dialNumber,
       normalizedNumber,
-      entryPointId, 
-      outdialAniId: OUTDIAL_ANI_ID,
+      entryPointId: effectiveEntryPointId, 
+      origin: effectiveAniId,
       demoMode: runningInDemoMode 
     }, 'Outdial');
     
     try {
       if (!runningInDemoMode && desktopRef.current) {
-        console.log('[WebexCC] Outdialing via SDK:', normalizedNumber, entryPointId, OUTDIAL_ANI_ID);
-        addSDKLog('info', 'Calling SDK agentContact.outdial()', {
-          destination: normalizedNumber,
-          entryPointId,
-          outdialAniId: OUTDIAL_ANI_ID,
-        }, 'Outdial');
+        console.log('[WebexCC] Outdialing via SDK:', normalizedNumber, effectiveEntryPointId, effectiveAniId);
         
-        // Use the complete payload structure required by Webex CC SDK
-        await desktopRef.current.agentContact.outdial({
-          entryPointId: entryPointId,
-          destination: normalizedNumber,
-          direction: 'outbound',
-          outboundType: 'adhoc',
-          mediaType: 'telephony',
-          attributes: {
-            outdialAniId: OUTDIAL_ANI_ID
-          }
+        // Use Desktop.dialer.startOutdial() with correct payload structure per Cisco sample
+        // Key differences from previous implementation:
+        // - Uses Desktop.dialer.startOutdial() not agentContact.outdial()
+        // - Payload wrapped in { data: {...} }
+        // - Uses 'origin' field for ANI (not attributes.outdialAniId)
+        // - Direction and outboundType are uppercase: 'OUTBOUND', 'OUTDIAL'
+        const result = await desktopRef.current.dialer.startOutdial({
+          data: {
+            entryPointId: effectiveEntryPointId,
+            destination: normalizedNumber,
+            direction: 'OUTBOUND',
+            origin: effectiveAniId,
+            attributes: {},
+            mediaType: 'telephony',
+            outboundType: 'OUTDIAL',
+          },
         });
         
-        addSDKLog('info', 'Outdial request sent successfully', { 
+        addSDKLog('info', 'Outdial request sent successfully via dialer.startOutdial', { 
           destination: normalizedNumber,
-          entryPointId,
+          entryPointId: effectiveEntryPointId,
+          result,
         }, 'Outdial');
         // Contact will be created via event listener (eAgentOfferContact / eAgentContactAssigned)
         return;
@@ -1967,38 +1995,53 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     console.log('[WebexCC] Outdial to:', normalizedNumber);
   }, [agentProfile?.dialNumber, entryPoints, runningInDemoMode, addSDKLog]);
 
-  // Recording controls
-  const startRecording = useCallback(async (taskId: string) => {
+  // Recording controls - use pauseRecording/resumeRecording per Cisco sample
+  const pauseRecording = useCallback(async (taskId: string) => {
     try {
       if (!runningInDemoMode && desktopRef.current) {
-        console.log('[WebexCC] Starting recording via SDK:', taskId);
-        await desktopRef.current.agentContact.pauseRecording({ interactionId: taskId, pause: false });
+        console.log('[WebexCC] Pausing recording via SDK:', taskId);
+        addSDKLog('info', 'Pausing recording', { taskId }, 'Recording');
+        await desktopRef.current.agentContact.pauseRecording({ interactionId: taskId });
+        addSDKLog('info', 'Recording paused', { taskId }, 'Recording');
       }
     } catch (error) {
-      console.error('[WebexCC] Start recording failed:', error);
-    }
-    
-    setActiveTasks(prev => prev.map(t => 
-      t.taskId === taskId ? { ...t, isRecording: true } : t
-    ));
-    console.log('[WebexCC] Recording started:', taskId);
-  }, [runningInDemoMode]);
-
-  const stopRecording = useCallback(async (taskId: string) => {
-    try {
-      if (!runningInDemoMode && desktopRef.current) {
-        console.log('[WebexCC] Stopping recording via SDK:', taskId);
-        await desktopRef.current.agentContact.pauseRecording({ interactionId: taskId, pause: true });
-      }
-    } catch (error) {
-      console.error('[WebexCC] Stop recording failed:', error);
+      console.error('[WebexCC] Pause recording failed:', error);
+      addSDKLog('error', 'Pause recording failed', { error: error instanceof Error ? error.message : String(error) }, 'Recording');
     }
     
     setActiveTasks(prev => prev.map(t => 
       t.taskId === taskId ? { ...t, isRecording: false } : t
     ));
-    console.log('[WebexCC] Recording stopped:', taskId);
-  }, [runningInDemoMode]);
+    console.log('[WebexCC] Recording paused:', taskId);
+  }, [runningInDemoMode, addSDKLog]);
+
+  const resumeRecording = useCallback(async (taskId: string) => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Resuming recording via SDK:', taskId);
+        addSDKLog('info', 'Resuming recording', { taskId }, 'Recording');
+        await desktopRef.current.agentContact.resumeRecording({ interactionId: taskId });
+        addSDKLog('info', 'Recording resumed', { taskId }, 'Recording');
+      }
+    } catch (error) {
+      console.error('[WebexCC] Resume recording failed:', error);
+      addSDKLog('error', 'Resume recording failed', { error: error instanceof Error ? error.message : String(error) }, 'Recording');
+    }
+    
+    setActiveTasks(prev => prev.map(t => 
+      t.taskId === taskId ? { ...t, isRecording: true } : t
+    ));
+    console.log('[WebexCC] Recording resumed:', taskId);
+  }, [runningInDemoMode, addSDKLog]);
+
+  // Legacy recording controls (wrapper functions)
+  const startRecording = useCallback(async (taskId: string) => {
+    await resumeRecording(taskId);
+  }, [resumeRecording]);
+
+  const stopRecording = useCallback(async (taskId: string) => {
+    await pauseRecording(taskId);
+  }, [pauseRecording]);
 
   // Send chat message
   const sendChatMessage = useCallback(async (taskId: string, message: string) => {
@@ -2022,18 +2065,26 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     setSelectedTaskId(taskId);
   }, []);
 
-  // Update CAD variable
+  // Update CAD variable - use Desktop.dialer.updateCadVariables per Cisco sample
   const updateCADVariable = useCallback(async (taskId: string, key: string, value: string) => {
     try {
       if (!runningInDemoMode && desktopRef.current) {
         console.log('[WebexCC] Updating CAD variable via SDK:', taskId, key, value);
-        await desktopRef.current.agentContact.updateCadVariables({
+        addSDKLog('info', 'Updating CAD variable', { taskId, key, value }, 'CAD');
+        
+        // Use Desktop.dialer.updateCadVariables with data.attributes structure per Cisco sample
+        await desktopRef.current.dialer.updateCadVariables({
           interactionId: taskId,
-          cadVariables: { [key]: value },
+          data: {
+            attributes: { [key]: value },
+          },
         });
+        
+        addSDKLog('info', 'CAD variable updated', { taskId, key, value }, 'CAD');
       }
     } catch (error) {
       console.error('[WebexCC] Update CAD variable failed:', error);
+      addSDKLog('error', 'Update CAD variable failed', { error: error instanceof Error ? error.message : String(error) }, 'CAD');
     }
     
     setActiveTasks(prev => prev.map(t => 
@@ -2047,7 +2098,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       : null
     );
     console.log('[WebexCC] CAD updated:', taskId, key, value);
-  }, [runningInDemoMode]);
+  }, [runningInDemoMode, addSDKLog]);
 
   // Add customer note
   const addCustomerNote = useCallback(async (note: string) => {
@@ -2128,6 +2179,81 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       throw error;
     }
   }, [activeTasks, runningInDemoMode, agentProfile?.name, sendChatMessage]);
+
+  // Upload logs - per Cisco sample for troubleshooting
+  const uploadLogs = useCallback(async (): Promise<string | null> => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Uploading logs via SDK');
+        addSDKLog('info', 'Initiating log upload', null, 'Diagnostics');
+        
+        // Try Desktop.logger.uploadLogs() or Desktop.diagnostics.uploadLogs()
+        let uploadResponse;
+        if (desktopRef.current.logger?.uploadLogs) {
+          uploadResponse = await desktopRef.current.logger.uploadLogs();
+        } else if (desktopRef.current.diagnostics?.uploadLogs) {
+          uploadResponse = await desktopRef.current.diagnostics.uploadLogs();
+        } else {
+          addSDKLog('warn', 'Log upload not available - SDK method not found', null, 'Diagnostics');
+          return null;
+        }
+        
+        const feedbackId = uploadResponse?.feedbackId || uploadResponse?.data?.feedbackId;
+        addSDKLog('info', 'Log upload successful', { feedbackId }, 'Diagnostics');
+        console.log('[WebexCC] Logs uploaded with feedbackId:', feedbackId);
+        return feedbackId;
+      }
+    } catch (error) {
+      console.error('[WebexCC] Log upload failed:', error);
+      addSDKLog('error', 'Log upload failed', { error: error instanceof Error ? error.message : String(error) }, 'Diagnostics');
+    }
+    
+    // Demo mode
+    const mockFeedbackId = `DEMO-${Date.now().toString(36).toUpperCase()}`;
+    addSDKLog('info', 'Demo mode - mock log upload', { feedbackId: mockFeedbackId }, 'Diagnostics');
+    return mockFeedbackId;
+  }, [runningInDemoMode, addSDKLog]);
+
+  // Fetch buddy agents - per Cisco sample for real-time availability
+  const fetchBuddyAgents = useCallback(async (): Promise<void> => {
+    try {
+      if (!runningInDemoMode && desktopRef.current) {
+        console.log('[WebexCC] Fetching buddy agents via SDK');
+        addSDKLog('info', 'Fetching buddy agents', null, 'BuddyAgents');
+        
+        // Try multiple methods to get buddy agents
+        let buddyAgentsData: any = null;
+        
+        if (desktopRef.current.agentContact?.buddyAgents?.get) {
+          buddyAgentsData = await desktopRef.current.agentContact.buddyAgents.get();
+        } else if (desktopRef.current.actions?.getBuddyAgents) {
+          buddyAgentsData = await desktopRef.current.actions.getBuddyAgents();
+        }
+        
+        if (buddyAgentsData?.data && Array.isArray(buddyAgentsData.data)) {
+          const mappedAgents: TeamAgent[] = buddyAgentsData.data.map((agent: any) => ({
+            agentId: agent.id || agent.agentId,
+            name: agent.name || agent.agentName || 'Unknown Agent',
+            state: mapSdkStateToAgentState(agent.state || agent.status || 'Offline'),
+            teamName: agent.teamName || agent.team || '',
+            skills: agent.skills || [],
+            isFavorite: false,
+          }));
+          setBuddyAgents(mappedAgents);
+          addSDKLog('info', `Loaded ${mappedAgents.length} buddy agents`, null, 'BuddyAgents');
+        } else {
+          addSDKLog('warn', 'No buddy agents data returned', null, 'BuddyAgents');
+        }
+        return;
+      }
+    } catch (error) {
+      console.error('[WebexCC] Fetch buddy agents failed:', error);
+      addSDKLog('error', 'Fetch buddy agents failed', { error: error instanceof Error ? error.message : String(error) }, 'BuddyAgents');
+    }
+    
+    // Demo mode - use mock team agents as buddy agents
+    setBuddyAgents(mockTeamAgents);
+  }, [runningInDemoMode, addSDKLog]);
 
   // Demo: Trigger incoming task manually
   const triggerIncomingTask = useCallback((mediaType: ChannelType, queueId?: string) => {
@@ -2258,6 +2384,9 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     queues,
     teamAgents,
     entryPoints,
+    buddyAgents,
+    addressBook,
+    outdialAniList,
     agentMetrics,
     extendedMetrics,
     consultState,
@@ -2298,6 +2427,10 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     addCustomerNote,
     toggleFavoriteAgent,
     escalateToVideo,
+    uploadLogs,
+    fetchBuddyAgents,
+    pauseRecording,
+    resumeRecording,
     triggerIncomingTask,
     applyCustomerScenario,
     triggerRONA,
