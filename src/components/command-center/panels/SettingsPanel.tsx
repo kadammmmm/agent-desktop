@@ -16,9 +16,10 @@ import {
 import { useWebex } from '@/contexts/WebexContext';
 import { useTheme } from '@/contexts/ThemeContext';
 import { isDemoMode } from '@/lib/webexEnvironment';
+import { toast } from 'sonner';
 import {
   Settings, Volume2, Mic, Monitor, Bell, Keyboard,
-  Sun, Moon, User, Building
+  Sun, Moon, User, Building, Upload, Loader2
 } from 'lucide-react';
 
 interface AudioDevice {
@@ -61,9 +62,10 @@ const KEYBOARD_SHORTCUTS = [
 ];
 
 export function SettingsPanel() {
-  const { agentProfile } = useWebex();
+  const { agentProfile, uploadLogs } = useWebex();
   const { theme, setTheme } = useTheme();
   const demoMode = isDemoMode();
+  const [isUploadingLogs, setIsUploadingLogs] = useState(false);
   
   const [preferences, setPreferences] = useState<AgentPreferences>(() => {
     const saved = localStorage.getItem('agent-preferences');
@@ -115,6 +117,27 @@ export function SettingsPanel() {
     if ('Notification' in window) {
       const permission = await Notification.requestPermission();
       setNotificationPermission(permission);
+    }
+  };
+
+  const handleUploadLogs = async () => {
+    setIsUploadingLogs(true);
+    try {
+      const feedbackId = await uploadLogs();
+      if (feedbackId) {
+        toast.success(`Logs uploaded successfully`, {
+          description: `Feedback ID: ${feedbackId}`,
+          duration: 10000,
+        });
+      } else {
+        toast.error('Log upload not available');
+      }
+    } catch (error) {
+      toast.error('Failed to upload logs', {
+        description: error instanceof Error ? error.message : 'Unknown error',
+      });
+    } finally {
+      setIsUploadingLogs(false);
     }
   };
 
@@ -405,6 +428,45 @@ export function SettingsPanel() {
                 </div>
               </div>
             ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Diagnostics */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Upload className="w-4 h-4" />
+            Diagnostics
+          </CardTitle>
+          <CardDescription>Troubleshooting and support tools</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <Label>Upload Logs</Label>
+              <p className="text-xs text-muted-foreground">
+                Send diagnostic logs to Webex support for troubleshooting
+              </p>
+            </div>
+            <Button 
+              variant="outline" 
+              size="sm"
+              onClick={handleUploadLogs}
+              disabled={isUploadingLogs}
+            >
+              {isUploadingLogs ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Uploading...
+                </>
+              ) : (
+                <>
+                  <Upload className="w-4 h-4 mr-2" />
+                  Upload Logs
+                </>
+              )}
+            </Button>
           </div>
         </CardContent>
       </Card>

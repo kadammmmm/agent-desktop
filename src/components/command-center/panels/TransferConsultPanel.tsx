@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useWebex } from '@/contexts/WebexContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -7,7 +7,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import {
   Users, Layers, Phone, Star, Search,
-  ArrowRight, PhoneForwarded, UserPlus, Clock, X, Check
+  ArrowRight, PhoneForwarded, UserPlus, Clock, X, Check, RefreshCw
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -15,6 +15,7 @@ export function TransferConsultPanel() {
   const {
     queues,
     teamAgents,
+    buddyAgents,
     activeTasks,
     selectedTaskId,
     consultState,
@@ -28,15 +29,36 @@ export function TransferConsultPanel() {
     cancelConsult,
     conferenceCall,
     toggleFavoriteAgent,
+    fetchBuddyAgents,
   } = useWebex();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [dialNumber, setDialNumber] = useState('');
   const [transferType, setTransferType] = useState<'blind' | 'consult'>('blind');
+  const [isRefreshingBuddies, setIsRefreshingBuddies] = useState(false);
+
+  // Fetch buddy agents on mount
+  useEffect(() => {
+    fetchBuddyAgents();
+  }, [fetchBuddyAgents]);
+
+  const handleRefreshBuddyAgents = async () => {
+    setIsRefreshingBuddies(true);
+    await fetchBuddyAgents();
+    setIsRefreshingBuddies(false);
+  };
+
+  // Combine buddy agents with team agents, preferring buddy agents data for duplicates
+  const allAgents = [...buddyAgents];
+  teamAgents.forEach(ta => {
+    if (!allAgents.find(ba => ba.agentId === ta.agentId)) {
+      allAgents.push(ta);
+    }
+  });
 
   const task = activeTasks.find(t => t.taskId === selectedTaskId);
-  const favoriteAgents = teamAgents.filter(a => a.isFavorite);
-  const filteredAgents = teamAgents.filter(a =>
+  const favoriteAgents = allAgents.filter(a => a.isFavorite);
+  const filteredAgents = allAgents.filter(a =>
     a.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
     a.teamName.toLowerCase().includes(searchQuery.toLowerCase())
   );
@@ -224,8 +246,8 @@ export function TransferConsultPanel() {
 
         {/* Agents Tab */}
         <TabsContent value="agents" className="flex-1 overflow-hidden mt-0">
-          <div className="p-3">
-            <div className="relative">
+          <div className="p-3 flex items-center gap-2">
+            <div className="relative flex-1">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input
                 placeholder="Search agents..."
@@ -234,7 +256,25 @@ export function TransferConsultPanel() {
                 className="pl-9"
               />
             </div>
+            <Button 
+              variant="outline" 
+              size="icon" 
+              onClick={handleRefreshBuddyAgents}
+              disabled={isRefreshingBuddies}
+              title="Refresh buddy agents"
+            >
+              <RefreshCw className={cn("w-4 h-4", isRefreshingBuddies && "animate-spin")} />
+            </Button>
           </div>
+          
+          {/* Buddy Agents indicator */}
+          {buddyAgents.length > 0 && (
+            <div className="px-3 pb-2">
+              <Badge variant="outline" className="text-xs">
+                {buddyAgents.length} buddy agents available
+              </Badge>
+            </div>
+          )}
           <ScrollArea className="flex-1 px-3">
             <div className="space-y-2 pb-3">
               {filteredAgents.map(agent => (
