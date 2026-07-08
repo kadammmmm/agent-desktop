@@ -294,6 +294,19 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   const desktopRef = useRef<any>(null);
   const idleCodesRef = useRef<IdleCode[]>([]);
   const lastStateChangePayloadRef = useRef<any>(null);
+  // Event de-duplication: SDK sometimes delivers the same contact event twice
+  // within milliseconds. Fingerprints kept for a short TTL to swallow the copy.
+  const handledEventsRef = useRef<Map<string, number>>(new Map());
+  // Guard against double-registration of agentContact listeners.
+  const listenersRegisteredRef = useRef(false);
+  // Live refs so async safety-nets and hydration paths can read latest state
+  // without stale closures.
+  const activeTasksRef = useRef<Task[]>([]);
+  const incomingTaskRef = useRef<IncomingTask | null>(null);
+  const agentStateRef = useRef<AgentStateInfo | null>(null);
+  // Late-bound ref to the hydrator, populated once it's defined below. Lets
+  // callbacks declared earlier in the module invoke it without TDZ issues.
+  const hydrateActiveTaskRef = useRef<((interactionId: string | undefined, reason: string) => Promise<boolean>) | null>(null);
 
   // SDK Logging helper
   const addSDKLog = useCallback((level: SDKLogLevel, message: string, data?: unknown, source?: string) => {
@@ -340,6 +353,29 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     idleCodesRef.current = idleCodes;
   }, [idleCodes]);
+
+  // Keep live refs in sync so out-of-render callbacks (SDK events, safety-net
+  // setTimeouts, poll loops) never operate on stale closure snapshots.
+  useEffect(() => { activeTasksRef.current = activeTasks; }, [activeTasks]);
+  useEffect(() => { incomingTaskRef.current = incomingTask; }, [incomingTask]);
+  useEffect(() => { agentStateRef.current = agentState; }, [agentState]);
+
+  // Return true if this (event, interactionId) was already handled in the
+  // last `ttlMs` ms. Used to swallow duplicate SDK deliveries.
+  const isDuplicateEvent = useCallback((eventName: string, interactionId: string | undefined, ttlMs = 3000): boolean => {
+    if (!interactionId) return false;
+    const key = `${eventName}:${interactionId}`;
+    const now = Date.now();
+    // Sweep expired entries opportunistically.
+    for (const [k, ts] of handledEventsRef.current) {
+      if (now - ts > ttlMs) handledEventsRef.current.delete(k);
+    }
+    const last = handledEventsRef.current.get(key);
+    if (last !== undefined && now - last < ttlMs) return true;
+    handledEventsRef.current.set(key, now);
+    return false;
+  }, []);
+
 
   // Check if a state indicates the agent is actively handling a contact.
   const isEngagedLikeState = useCallback((state: string): boolean => {
@@ -670,10 +706,33 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
 
     if (snapshot.state === 'Engaged') {
       promoteIncomingTaskIfEngaged();
+      // Safety net: if we're Engaged but have no active task, try to
+      // hydrate one via the late-bound ref (hydrator is defined below).
+      if (activeTasksRef.current.length === 0) {
+        const incoming = incomingTaskRef.current;
+        const hydrate = hydrateActiveTaskRef.current;
+        if (hydrate) {
+          if (incoming?.taskId) {
+            hydrate(incoming.taskId, 'engaged-no-active-task').catch(() => {});
+          } else {
+            (async () => {
+              try {
+                const taskMap = await desktopRef.current?.actions?.getTaskMap?.();
+                if (taskMap && typeof taskMap === 'object') {
+                  const firstKey = Object.keys(taskMap)[0];
+                  if (firstKey) hydrate(firstKey, 'engaged-taskmap-scan');
+                }
+              } catch { /* logged inside hydrator */ }
+            })();
+          }
+        }
+      }
     }
 
     return snapshot;
   }, [addSDKLog, buildAgentStateSnapshot, promoteIncomingTaskIfEngaged]);
+
+
 
   // Initialize SDK and auto-fetch agent session
   const initialize = useCallback(async () => {
@@ -972,8 +1031,17 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
           // Subscribe to agent state changes
           // The 'updated' event passes an array of changed fields, so we re-read latestData
           desktopRef.current.agentStateInfo.addEventListener('updated', (changes: any) => {
-            addSDKLog('debug', 'Agent state updated event received', changes, 'WebexContext');
+            const _snapshot = desktopRef.current?.agentStateInfo?.latestData;
+            addSDKLog('info', '>>> agentStateInfo.updated <<<', {
+              changes,
+              status: _snapshot?.status,
+              subStatus: _snapshot?.subStatus,
+              agentSessionId: _snapshot?.agentSessionId,
+              lastStateChangeReason: _snapshot?.lastStateChangeReason,
+              hasChannelsMap: !!_snapshot?.channelsMap,
+            }, 'WebexContext');
             console.log('[WebexCC] Agent state update event:', changes);
+
             
             // Re-read the full latestData to get complete state and sync config
             const latestData = desktopRef.current?.agentStateInfo?.latestData;
@@ -1046,7 +1114,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
           
           // Register event listeners for real-time updates
           addSDKLog('info', 'Registering SDK event listeners...', null, 'WebexContext');
-          
+
           // Verify agentContact module is available
           if (desktopRef.current.agentContact) {
             addSDKLog('info', 'agentContact module available', {
@@ -1056,49 +1124,88 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
           } else {
             addSDKLog('error', 'agentContact module NOT available!', null, 'WebexContext');
           }
-          
+
+          if (listenersRegisteredRef.current) {
+            addSDKLog('warn', 'agentContact listeners already registered — skipping duplicate registration', null, 'WebexContext');
+          } else {
+            listenersRegisteredRef.current = true;
+
           desktopRef.current.agentContact.addEventListener('eAgentOfferContact', (contact: any) => {
-            addSDKLog('info', '>>> eAgentOfferContact EVENT FIRED <<<', { contactType: typeof contact, contactKeys: Object.keys(contact || {}) }, 'WebexContext');
+            const iid = extractContactData(contact)?.interactionId;
+            addSDKLog('info', '>>> eAgentOfferContact EVENT FIRED <<<', { interactionId: iid, raw: contact }, 'WebexContext');
             console.log('[WebexCC] >>> eAgentOfferContact EVENT FIRED:', contact);
+            if (isDuplicateEvent('eAgentOfferContact', iid)) {
+              addSDKLog('debug', 'Duplicate eAgentOfferContact swallowed', { interactionId: iid }, 'WebexContext');
+              return;
+            }
             handleIncomingContact(contact);
           });
           addSDKLog('info', 'Registered: eAgentOfferContact listener', null, 'WebexContext');
           
           desktopRef.current.agentContact.addEventListener('eAgentContactAssigned', (contact: any) => {
-            addSDKLog('info', '>>> eAgentContactAssigned EVENT FIRED <<<', { contactType: typeof contact, contactKeys: Object.keys(contact || {}) }, 'WebexContext');
+            const iid = extractContactData(contact)?.interactionId;
+            addSDKLog('info', '>>> eAgentContactAssigned EVENT FIRED <<<', { interactionId: iid, raw: contact }, 'WebexContext');
             console.log('[WebexCC] >>> eAgentContactAssigned EVENT FIRED:', contact);
+            if (isDuplicateEvent('eAgentContactAssigned', iid)) {
+              addSDKLog('debug', 'Duplicate eAgentContactAssigned swallowed', { interactionId: iid }, 'WebexContext');
+              return;
+            }
             handleContactAssigned(contact);
           });
           addSDKLog('info', 'Registered: eAgentContactAssigned listener', null, 'WebexContext');
           
           desktopRef.current.agentContact.addEventListener('eAgentContactEnded', (contact: any) => {
-            addSDKLog('info', '>>> eAgentContactEnded EVENT FIRED <<<', contact, 'WebexContext');
+            const iid = extractContactData(contact)?.interactionId;
+            addSDKLog('info', '>>> eAgentContactEnded EVENT FIRED <<<', { interactionId: iid, raw: contact }, 'WebexContext');
             console.log('[WebexCC] >>> eAgentContactEnded EVENT FIRED:', contact);
+            if (isDuplicateEvent('eAgentContactEnded', iid)) {
+              addSDKLog('debug', 'Duplicate eAgentContactEnded swallowed', { interactionId: iid }, 'WebexContext');
+              return;
+            }
             handleContactEnded(contact);
           });
           addSDKLog('info', 'Registered: eAgentContactEnded listener', null, 'WebexContext');
           
           desktopRef.current.agentContact.addEventListener('eAgentContactWrappedUp', (contact: any) => {
-            addSDKLog('info', '>>> eAgentContactWrappedUp EVENT FIRED <<<', contact, 'WebexContext');
+            const iid = extractContactData(contact)?.interactionId;
+            addSDKLog('info', '>>> eAgentContactWrappedUp EVENT FIRED <<<', { interactionId: iid, raw: contact }, 'WebexContext');
             console.log('[WebexCC] >>> eAgentContactWrappedUp EVENT FIRED:', contact);
+            if (isDuplicateEvent('eAgentContactWrappedUp', iid)) return;
             handleContactWrappedUp(contact);
           });
           addSDKLog('info', 'Registered: eAgentContactWrappedUp listener', null, 'WebexContext');
           
           desktopRef.current.agentContact.addEventListener('eAgentWrapup', (contact: any) => {
-            addSDKLog('info', '>>> eAgentWrapup EVENT FIRED <<<', contact, 'WebexContext');
+            const iid = extractContactData(contact)?.interactionId;
+            addSDKLog('info', '>>> eAgentWrapup EVENT FIRED <<<', { interactionId: iid, raw: contact }, 'WebexContext');
             console.log('[WebexCC] >>> eAgentWrapup EVENT FIRED:', contact);
+            if (isDuplicateEvent('eAgentWrapup', iid)) return;
             handleAgentWrapup(contact);
           });
           addSDKLog('info', 'Registered: eAgentWrapup listener', null, 'WebexContext');
           
           // Additional event listeners for comprehensive contact handling
           desktopRef.current.agentContact.addEventListener('eAgentOfferContactRona', (contact: any) => {
-            addSDKLog('info', '>>> eAgentOfferContactRona EVENT FIRED <<<', contact, 'WebexContext');
-            setIncomingTask(null);
-            setAgentStateInfo(prev => prev ? { ...prev, state: 'RONA' } : null);
+            const iid = extractContactData(contact)?.interactionId;
+            addSDKLog('info', '>>> eAgentOfferContactRona EVENT FIRED <<<', { interactionId: iid, raw: contact }, 'WebexContext');
+            if (isDuplicateEvent('eAgentOfferContactRona', iid)) return;
+            // Only clear the ringing card when this RONA matches the current
+            // incoming task (or event has no id). Prevents a stray RONA from
+            // wiping a call the agent has actually answered.
+            const currentIncoming = incomingTaskRef.current;
+            if (!iid || (currentIncoming && currentIncoming.taskId === iid)) {
+              setIncomingTask(null);
+              setAgentStateInfo(prev => prev ? { ...prev, state: 'RONA' } : null);
+              addSDKLog('info', 'RONA matched incoming task — cleared', { interactionId: iid }, 'WebexContext');
+            } else {
+              addSDKLog('warn', 'RONA event ignored — no matching incoming task', {
+                ronaInteractionId: iid,
+                currentIncomingId: currentIncoming?.taskId,
+              }, 'WebexContext');
+            }
           });
           addSDKLog('info', 'Registered: eAgentOfferContactRona listener', null, 'WebexContext');
+
           
           desktopRef.current.agentContact.addEventListener('eAgentContactHeld', (contact: any) => {
             addSDKLog('info', '>>> eAgentContactHeld EVENT FIRED <<<', contact, 'WebexContext');
@@ -1348,7 +1455,10 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
             addSDKLog('warn', 'Could not register campaign dialer listeners', { error: e instanceof Error ? e.message : String(e) }, 'WebexContext');
           }
 
+          } // end: if (!listenersRegisteredRef.current) else { ... }
+
           addSDKLog('info', 'SDK initialization complete - all event listeners registered', null, 'WebexContext');
+
 
           
           // Hydrate current interactions from TaskMap
@@ -1565,151 +1675,168 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   const handleContactAssigned = (event: any) => {
     // Extract contact data from nested SDK payload
     const contact = extractContactData(event);
-    
+    const currentIncoming = incomingTaskRef.current;
+
     addSDKLog('info', 'handleContactAssigned - extracted data', {
       extracted: contact,
       rawEventKeys: Object.keys(event || {}),
       hasDataProperty: !!event?.data,
       hasInteractionProperty: !!event?.data?.interaction,
-      currentIncomingTaskId: incomingTask?.taskId,
-      currentActiveTasksCount: activeTasks.length,
+      currentIncomingTaskId: currentIncoming?.taskId,
+      currentActiveTasksCount: activeTasksRef.current.length,
     }, 'WebexContext');
     console.log('[WebexCC] handleContactAssigned - EXTRACTED:', JSON.stringify(contact, null, 2));
-    
+
     if (ronaTimerRef.current) {
       clearTimeout(ronaTimerRef.current);
       addSDKLog('info', 'Cleared RONA timer', null, 'WebexContext');
     }
-    
-    const taskId = contact.interactionId || `task-${Date.now()}`;
-    const newTask: Task = {
-      taskId,
-      mediaType: mapMediaType(contact.mediaType),
-      mediaChannel: contact.mediaChannel || 'telephony',
-      state: 'connected',
-      direction: contact.direction as 'inbound' | 'outbound',
-      queueName: contact.queueName || 'Unknown Queue',
-      ani: contact.ani || '',
-      dnis: contact.dnis || '',
-      startTime: Date.now(),
-      isRecording: contact.isRecording || false,
-      isMuted: false,
-      isHeld: false,
-      wrapUpRequired: true,
-      cadVariables: contact.cadVariables || {},
-      customerName: contact.customerName,
-      customerEmail: contact.customerEmail,
-      customerPhone: contact.customerPhone || contact.ani,
-      // SDK-specific fields for call controls
-      mediaResourceId: contact.mediaResourceId,
-      isConsult: false,
-      isPostCallConsult: false,
-    };
-    
-    addSDKLog('info', 'Creating active task from extracted contact', { taskId, newTask }, 'WebexContext');
-    
-    setActiveTasks(prev => {
-      const updated = [...prev.filter(t => t.taskId !== taskId), newTask];
-      addSDKLog('info', 'Updated activeTasks', { previousCount: prev.length, newCount: updated.length }, 'WebexContext');
-      return updated;
-    });
-    setSelectedTaskId(taskId);
-    setIncomingTask(null);
-    
-    // Set agent state to Engaged when contact is assigned
-    setAgentStateInfo(prev => prev ? { 
-      ...prev, 
+
+    // Resolve id from multiple sources; fall back to the current incoming
+    // offer's id if the assigned event is thin. Only use a synthetic id as
+    // an absolute last resort.
+    const resolvedId = contact.interactionId
+      || event?.data?.interactionId
+      || event?.interactionId
+      || currentIncoming?.taskId;
+
+    if (!resolvedId) {
+      addSDKLog('warn', 'handleContactAssigned: no interactionId resolvable — creating synthetic task', { event }, 'WebexContext');
+    }
+
+    // Set agent state to Engaged immediately so the UI reflects the answer.
+    setAgentStateInfo(prev => prev ? {
+      ...prev,
       state: 'Engaged',
-      lastStateChangeTime: Date.now()
+      lastStateChangeTime: Date.now(),
     } : null);
-    
-    // Populate customer profile from extracted contact data
-    const customerProfileData = {
-      id: taskId,
-      name: contact.customerName || contact.ani || 'Unknown Customer',
-      email: contact.customerEmail || '',
-      phone: contact.customerPhone || contact.ani || '',
-      company: contact.company || '',
-      isVerified: false,
-      tags: [] as CustomerTag[],
-      interactionHistory: [] as CallLogEntry[],
-      cadVariables: contact.cadVariables || {},
-    };
-    addSDKLog('info', 'Setting customer profile from extracted data', customerProfileData, 'WebexContext');
-    setCustomerProfile(customerProfileData);
-    
-    addSDKLog('info', `Contact assigned complete - Agent state set to Engaged`, { 
-      taskId, 
-      ani: contact.ani,
-      customerName: contact.customerName 
-    }, 'WebexContext');
+
+    // If we can resolve an id, use the idempotent hydrator (it will also
+    // fall back to the stashed offer payload if the assigned event is thin).
+    if (resolvedId) {
+      hydrateActiveTaskFromInteractionId(resolvedId, 'eAgentContactAssigned').then(ok => {
+        if (!ok) {
+          // Hydrator couldn't find data — build directly from the assigned event.
+          const startTime = currentIncoming?.startTime ?? contact.createdTimestamp ?? Date.now();
+          const newTask = buildTaskFromContact({ ...contact, interactionId: resolvedId }, startTime);
+          setActiveTasks(prev => prev.some(t => t.taskId === resolvedId) ? prev : [...prev, newTask]);
+          setSelectedTaskId(resolvedId);
+          setIncomingTask(null);
+          setCustomerProfile({
+            id: resolvedId,
+            name: contact.customerName || contact.ani || 'Unknown Customer',
+            email: contact.customerEmail || '',
+            phone: contact.customerPhone || contact.ani || '',
+            company: contact.company || '',
+            isVerified: false,
+            tags: [] as CustomerTag[],
+            interactionHistory: [] as CallLogEntry[],
+            cadVariables: contact.cadVariables || {},
+          });
+          addSDKLog('info', 'handleContactAssigned: built task directly from assigned event', { taskId: resolvedId }, 'WebexContext');
+        }
+      });
+    } else {
+      // No id available anywhere — synthesize and store.
+      const taskId = `task-${Date.now()}`;
+      const startTime = currentIncoming?.startTime ?? Date.now();
+      const newTask = buildTaskFromContact({ ...contact, interactionId: taskId }, startTime);
+      setActiveTasks(prev => [...prev, newTask]);
+      setSelectedTaskId(taskId);
+      setIncomingTask(null);
+      setCustomerProfile({
+        id: taskId,
+        name: contact.customerName || contact.ani || 'Unknown Customer',
+        email: contact.customerEmail || '',
+        phone: contact.customerPhone || contact.ani || '',
+        company: contact.company || '',
+        isVerified: false,
+        tags: [] as CustomerTag[],
+        interactionHistory: [] as CallLogEntry[],
+        cadVariables: contact.cadVariables || {},
+      });
+    }
   };
+
   
   // Handle contact ended
   const handleContactEnded = (event: any) => {
     const contact = extractContactData(event);
     const taskId = contact.interactionId || event?.data?.interactionId || event?.interactionId;
-    
+
     addSDKLog('info', 'handleContactEnded - extracted data', { extracted: contact, taskId }, 'WebexContext');
-    
-    const task = activeTasks.find(t => t.taskId === taskId);
-    
-    if (task?.wrapUpRequired) {
-      setActiveTasks(prev => prev.map(t => 
+
+    const task = activeTasksRef.current.find(t => t.taskId === taskId);
+    if (!task) {
+      addSDKLog('warn', 'handleContactEnded: no matching active task — ignoring', {
+        endedTaskId: taskId,
+        activeTaskIds: activeTasksRef.current.map(t => t.taskId),
+      }, 'WebexContext');
+      return;
+    }
+
+    if (task.wrapUpRequired) {
+      setActiveTasks(prev => prev.map(t =>
         t.taskId === taskId ? { ...t, state: 'wrapup' } : t
       ));
-      // Set agent state to WrapUp
-      setAgentStateInfo(prev => prev ? { 
-        ...prev, 
+      setAgentStateInfo(prev => prev ? {
+        ...prev,
         state: 'WrapUp',
-        lastStateChangeTime: Date.now()
+        lastStateChangeTime: Date.now(),
       } : null);
       addSDKLog('info', `Contact ended - Agent state set to WrapUp`, { taskId }, 'WebexContext');
     } else {
       setActiveTasks(prev => {
         const remaining = prev.filter(t => t.taskId !== taskId);
-        // Set agent state back to Available if no more tasks
         if (remaining.length === 0) {
-          setAgentStateInfo(prevState => prevState ? { 
-            ...prevState, 
+          setAgentStateInfo(prevState => prevState ? {
+            ...prevState,
             state: 'Available',
-            lastStateChangeTime: Date.now()
+            lastStateChangeTime: Date.now(),
           } : null);
           addSDKLog('info', `Contact ended - No remaining tasks, Agent state set to Available`, { taskId }, 'WebexContext');
         }
         return remaining;
       });
       if (selectedTaskId === taskId) {
-        setSelectedTaskId(activeTasks.find(t => t.taskId !== taskId)?.taskId || null);
+        setSelectedTaskId(activeTasksRef.current.find(t => t.taskId !== taskId)?.taskId || null);
       }
     }
   };
-  
+
   // Handle contact wrapped up
   const handleContactWrappedUp = (event: any) => {
     const contact = extractContactData(event);
     const taskId = contact.interactionId || event?.data?.interactionId || event?.interactionId;
-    
+
     addSDKLog('info', 'handleContactWrappedUp - extracted data', { extracted: contact, taskId }, 'WebexContext');
-    
+
+    if (!activeTasksRef.current.some(t => t.taskId === taskId)) {
+      addSDKLog('warn', 'handleContactWrappedUp: no matching active task — ignoring', {
+        wrappedTaskId: taskId,
+        activeTaskIds: activeTasksRef.current.map(t => t.taskId),
+      }, 'WebexContext');
+      return;
+    }
+
     setActiveTasks(prev => {
       const remaining = prev.filter(t => t.taskId !== taskId);
-      // Set agent state back to Available if no more tasks
       if (remaining.length === 0) {
-        setAgentStateInfo(prevState => prevState ? { 
-          ...prevState, 
+        setAgentStateInfo(prevState => prevState ? {
+          ...prevState,
           state: 'Available',
-          lastStateChangeTime: Date.now()
+          lastStateChangeTime: Date.now(),
         } : null);
         addSDKLog('info', `Contact wrapped up - No remaining tasks, Agent state set to Available`, { taskId }, 'WebexContext');
       }
       return remaining;
     });
     if (selectedTaskId === taskId) {
-      setSelectedTaskId(activeTasks.find(t => t.taskId !== taskId)?.taskId || null);
+      setSelectedTaskId(activeTasksRef.current.find(t => t.taskId !== taskId)?.taskId || null);
     }
     setCustomerProfile(null);
   };
+
   
   // Handle wrapup state (eAgentWrapup event)
   const handleAgentWrapup = (event: any) => {
@@ -1809,6 +1936,125 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     };
     return stateMap[sdkState?.toLowerCase()] || 'connected';
   };
+
+  // Build a Task object from an extracted contact (offer/assigned/taskMap).
+  const buildTaskFromContact = (contact: any, startTimeOverride?: number): Task => ({
+    taskId: contact.interactionId,
+    mediaType: mapMediaType(contact.mediaType),
+    mediaChannel: contact.mediaChannel || 'telephony',
+    state: mapContactState(contact.state || 'connected'),
+    direction: (contact.direction as 'inbound' | 'outbound') || 'inbound',
+    queueName: contact.queueName || 'Unknown Queue',
+    ani: contact.ani || '',
+    dnis: contact.dnis || '',
+    startTime: startTimeOverride ?? contact.createdTimestamp ?? Date.now(),
+    isRecording: !!contact.isRecording,
+    isMuted: false,
+    isHeld: false,
+    wrapUpRequired: true,
+    cadVariables: contact.cadVariables || {},
+    customerName: contact.customerName,
+    customerEmail: contact.customerEmail,
+    customerPhone: contact.customerPhone || contact.ani,
+    mediaResourceId: contact.mediaResourceId,
+    isConsult: false,
+    isPostCallConsult: false,
+  });
+
+  // Idempotently ensure an active task exists for `interactionId`. Tries
+  // Desktop.actions.getTaskMap() first (authoritative), then falls back to
+  // the offer payload stashed on the current incomingTask when the id matches.
+  // Safe to call repeatedly — will not create duplicates and will only clear
+  // the incomingTask card after the active task exists.
+  const hydrateActiveTaskFromInteractionId = useCallback(async (
+    interactionId: string | undefined,
+    reason: string,
+  ): Promise<boolean> => {
+    if (!interactionId) {
+      addSDKLog('debug', 'hydrateActiveTask: no interactionId supplied', { reason }, 'WebexContext');
+      return false;
+    }
+    if (activeTasksRef.current.some(t => t.taskId === interactionId)) {
+      addSDKLog('debug', 'hydrateActiveTask: task already active', { interactionId, reason }, 'WebexContext');
+      return true;
+    }
+
+    let contact: any = null;
+    let source: 'taskMap' | 'incomingOffer' | null = null;
+
+    // 1) TaskMap (authoritative)
+    try {
+      const taskMap = await desktopRef.current?.actions?.getTaskMap?.();
+      if (taskMap && typeof taskMap === 'object') {
+        const entry = (taskMap as any)[interactionId]
+          ?? Object.values(taskMap).find((t: any) => extractContactData(t)?.interactionId === interactionId);
+        if (entry) {
+          contact = extractContactData(entry);
+          source = 'taskMap';
+        }
+      }
+    } catch (e) {
+      addSDKLog('warn', 'hydrateActiveTask: getTaskMap failed', { reason, error: e instanceof Error ? e.message : String(e) }, 'WebexContext');
+    }
+
+    // 2) Fall back to the stashed offer payload
+    if (!contact) {
+      const incoming = incomingTaskRef.current;
+      if (incoming && incoming.taskId === interactionId && (incoming as any)._rawContact) {
+        contact = (incoming as any)._rawContact;
+        source = 'incomingOffer';
+      }
+    }
+
+    if (!contact) {
+      addSDKLog('warn', 'hydrateActiveTask: no source found for interactionId', { interactionId, reason }, 'WebexContext');
+      return false;
+    }
+
+    const incoming = incomingTaskRef.current;
+    const startTime = incoming && incoming.taskId === interactionId
+      ? incoming.startTime
+      : (contact.createdTimestamp || Date.now());
+
+    const newTask = buildTaskFromContact({ ...contact, interactionId }, startTime);
+    if (newTask.state === 'incoming') newTask.state = 'connected';
+
+    setActiveTasks(prev => {
+      if (prev.some(t => t.taskId === interactionId)) return prev;
+      return [...prev, newTask];
+    });
+    setSelectedTaskId(interactionId);
+    setCustomerProfile({
+      id: interactionId,
+      name: contact.customerName || contact.ani || 'Unknown Customer',
+      email: contact.customerEmail || '',
+      phone: contact.customerPhone || contact.ani || '',
+      company: contact.company || '',
+      isVerified: false,
+      tags: [] as CustomerTag[],
+      interactionHistory: [] as CallLogEntry[],
+      cadVariables: contact.cadVariables || {},
+    });
+    // Clear ringing card only after active task is in place
+    if (incoming && incoming.taskId === interactionId) {
+      setIncomingTask(null);
+    }
+
+    addSDKLog('info', 'hydrateActiveTask: materialized active task', {
+      interactionId, reason, source, startTime,
+      ani: contact.ani, customerName: contact.customerName,
+    }, 'WebexContext');
+    return true;
+  }, [addSDKLog]);
+
+  // Publish the hydrator via a ref so earlier-declared callbacks can call it.
+  useEffect(() => {
+    hydrateActiveTaskRef.current = hydrateActiveTaskFromInteractionId;
+  }, [hydrateActiveTaskFromInteractionId]);
+
+
+
+
 
   // Set agent state
   const setAgentState = useCallback(async (state: AgentState, idleCodeId?: string) => {
@@ -1913,11 +2159,23 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     const pollInterval = 500;
 
     const pollForConfirmation = async () => {
+      let lastLoggedSubStatus: string | null = null;
       while (Date.now() < pollDeadline) {
         await new Promise(r => setTimeout(r, pollInterval));
-        const current = agentStateInfo?.latestData;
+        // Re-read the SDK object fresh every iteration — never trust
+        // a captured reference from the top of setAgentState().
+        const current = desktopRef.current?.agentStateInfo?.latestData;
         const currentSubStatus = (current?.subStatus || '').toLowerCase();
         const currentAuxCode = current?.idleCode?.id;
+
+        if (currentSubStatus !== lastLoggedSubStatus) {
+          addSDKLog('debug', 'State-change poll observed subStatus', {
+            elapsedMs: Date.now() - pollStart,
+            subStatus: current?.subStatus,
+            auxCodeId: currentAuxCode,
+          }, 'WebexContext');
+          lastLoggedSubStatus = currentSubStatus;
+        }
 
         const stateMatches = currentSubStatus === desiredSubStatus;
         const auxMatches = state === 'Available' || currentAuxCode === idleCodeId;
@@ -1929,11 +2187,18 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
           return;
         }
       }
+      // Deadline: sync from whatever Cisco reports so the UI reflects reality
+      // instead of leaving the widget on the optimistic value forever.
+      const finalData = desktopRef.current?.agentStateInfo?.latestData;
+      if (finalData) {
+        syncAgentStateFromSdkData(finalData, 'poll deadline fallback');
+      }
       addSDKLog('warn',
-        `State change poll timed out after ${Date.now() - pollStart}ms; relying on SDK events.`,
-        { requestedState: state, latestSubStatus: agentStateInfo?.latestData?.subStatus },
+        `State change poll timed out after ${Date.now() - pollStart}ms; synced from latest SDK data.`,
+        { requestedState: state, latestSubStatus: finalData?.subStatus },
         'WebexContext');
     };
+
 
     // Fire and forget — the SDK 'updated' / 'eAgentChannelStateChanged' listeners
     // will also drive sync if they arrive first.
@@ -1955,12 +2220,26 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
         // Real SDK call
         console.log('[WebexCC] Accepting task via SDK:', taskId);
         await callAgentContact('accept', { interactionId: taskId });
-        // Task assignment will be handled via event listener
+        addSDKLog('info', 'acceptTask: SDK accept resolved; awaiting eAgentContactAssigned', { taskId }, 'WebexContext');
+
+        // Safety net: if the assigned event doesn't materialize an active
+        // task within ~1.5s, hydrate from getTaskMap()/offer payload.
+        setTimeout(() => {
+          if (activeTasksRef.current.some(t => t.taskId === taskId)) return;
+          const hydrate = hydrateActiveTaskRef.current;
+          if (!hydrate) return;
+          addSDKLog('warn', 'acceptTask safety-net firing — no active task after 1.5s', { taskId }, 'WebexContext');
+          hydrate(taskId, 'acceptTask safety-net').catch(() => {});
+        }, 1500);
+
+        // Task assignment is normally handled via event listener
         return;
       }
     } catch (error) {
       console.error('[WebexCC] Accept task failed:', error);
+      addSDKLog('error', 'acceptTask: SDK accept rejected', { taskId, error }, 'WebexContext');
     }
+
     
     // Demo mode or fallback
     const newTask: Task = {
