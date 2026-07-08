@@ -2191,7 +2191,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     try {
       if (!runningInDemoMode && desktopRef.current) {
         console.log('[WebexCC] Ending task via SDK:', taskId);
-        await desktopRef.current.agentContact.end({ interactionId: taskId });
+        await callAgentContact('end', { interactionId: taskId });
         // State will be updated via event listener
         return;
       }
@@ -2222,9 +2222,10 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     try {
       if (!runningInDemoMode && desktopRef.current) {
         console.log('[WebexCC] Wrapping up task via SDK:', taskId, wrapUpCodeId);
-        await desktopRef.current.agentContact.wrapup({
+        const codeName = wrapUpCodes.find((c) => c.id === wrapUpCodeId)?.name || 'Wrap Up';
+        await callAgentContact('wrapup', {
           interactionId: taskId,
-          wrapUpCodeId: wrapUpCodeId,
+          data: { wrapUpReason: codeName, auxCodeId: wrapUpCodeId },
         });
         // State will be updated via event listener
         return;
@@ -2757,7 +2758,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       if (!runningInDemoMode && desktopRef.current) {
         console.log('[WebexCC] Pausing recording via SDK:', taskId);
         addSDKLog('info', 'Pausing recording', { taskId }, 'Recording');
-        await desktopRef.current.agentContact.pauseRecording({ interactionId: taskId });
+        await callAgentContact('pauseRecording', { interactionId: taskId });
         addSDKLog('info', 'Recording paused', { taskId }, 'Recording');
       }
     } catch (error) {
@@ -2776,7 +2777,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       if (!runningInDemoMode && desktopRef.current) {
         console.log('[WebexCC] Resuming recording via SDK:', taskId);
         addSDKLog('info', 'Resuming recording', { taskId }, 'Recording');
-        await desktopRef.current.agentContact.resumeRecording({ interactionId: taskId });
+        await callAgentContact('resumeRecording', { interactionId: taskId, data: { autoResumed: false } });
         addSDKLog('info', 'Recording resumed', { taskId }, 'Recording');
       }
     } catch (error) {
