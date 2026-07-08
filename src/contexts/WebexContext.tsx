@@ -1822,6 +1822,26 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
 
         const latestData = agentStateInfo?.latestData;
         const channelType = getProvisionedChannelTypes(latestData);
+        const hasExplicitChannelData = !!(
+          getChannelStateMap(latestData)
+          || latestData?.channelsMap
+          || latestData?.channelTypes
+          || latestData?.connectedChannels
+          || latestData?.reservedAgentChannelIds
+        );
+
+        if (!hasExplicitChannelData && channelType.length === 1 && channelType[0] === 'telephony') {
+          addSDKLog('warn', 'No provisioned channel data found in latestData; inferring telephony channel for stateChangeV2', {
+            latestDataKeys: latestData ? Object.keys(latestData) : [],
+          }, 'WebexContext');
+        }
+
+        const syncLatestAgentState = () => {
+          const refreshedLatestData = agentStateInfo?.latestData;
+          if (refreshedLatestData) {
+            syncAgentStateFromSdkData(refreshedLatestData, 'post stateChange request latestData');
+          }
+        };
 
         if (state === 'Idle') {
           // Idle REQUIRES a valid UUID auxCodeId
@@ -1834,31 +1854,33 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
 
           if (hasV2) {
             const payload = { channelType, state: 'Idle' as const, auxCodeId: idleCodeId };
-            const request = { data: payload };
-            lastStateChangePayloadRef.current = request;
-            await agentStateInfo.stateChangeV2(request);
-            addSDKLog('info', `stateChangeV2 request sent`, request, 'WebexContext');
+            lastStateChangePayloadRef.current = payload;
+            await agentStateInfo.stateChangeV2(payload);
+            addSDKLog('info', `stateChangeV2 request sent`, payload, 'WebexContext');
+            syncLatestAgentState();
           } else {
             addSDKLog('warn', 'stateChangeV2 unavailable, falling back to legacy stateChange', null, 'WebexContext');
-            const request = { data: { state: 'Idle', auxCodeIdArray: idleCodeId } };
+            const request = { state: 'Idle' as const, auxCodeIdArray: idleCodeId };
             lastStateChangePayloadRef.current = request;
             await agentStateInfo.stateChange(request);
             addSDKLog('info', `Legacy stateChange sent: Idle with code ${idleCodeId}`, request, 'WebexContext');
+            syncLatestAgentState();
           }
         } else if (state === 'Available') {
           if (hasV2) {
             const payload = { channelType, state: 'Available' as const };
-            const request = { data: payload };
-            lastStateChangePayloadRef.current = request;
-            await agentStateInfo.stateChangeV2(request);
-            addSDKLog('info', `stateChangeV2 request sent`, request, 'WebexContext');
+            lastStateChangePayloadRef.current = payload;
+            await agentStateInfo.stateChangeV2(payload);
+            addSDKLog('info', `stateChangeV2 request sent`, payload, 'WebexContext');
+            syncLatestAgentState();
           } else {
             addSDKLog('warn', 'stateChangeV2 unavailable, falling back to legacy stateChange', null, 'WebexContext');
             // Legacy path: pass sentinel "0" (empty string is rejected with reasonCode 33)
-            const request = { data: { state: 'Available', auxCodeIdArray: '0' } };
+            const request = { state: 'Available' as const, auxCodeIdArray: '0' };
             lastStateChangePayloadRef.current = request;
             await agentStateInfo.stateChange(request);
             addSDKLog('info', `Legacy stateChange sent: Available`, request, 'WebexContext');
+            syncLatestAgentState();
           }
         } else {
           addSDKLog('warn', `State ${state} not directly settable via stateChange API`, null, 'WebexContext');
@@ -1884,7 +1906,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       console.error('[WebexCC] State change failed:', error);
       // Don't update local state on error - let SDK events drive state
     }
-  }, [runningInDemoMode, idleCodes, addSDKLog, getProvisionedChannelTypes, isValidUUID]);
+  }, [runningInDemoMode, idleCodes, addSDKLog, getProvisionedChannelTypes, getChannelStateMap, isValidUUID, syncAgentStateFromSdkData]);
 
   // Accept incoming task
   const acceptTask = useCallback(async (taskId: string) => {
