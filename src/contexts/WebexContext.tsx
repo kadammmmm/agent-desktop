@@ -240,6 +240,8 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
 
   const ronaTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const desktopRef = useRef<any>(null);
+  const idleCodesRef = useRef<IdleCode[]>([]);
+  const lastStateChangePayloadRef = useRef<any>(null);
 
   // SDK Logging helper
   const addSDKLog = useCallback((level: SDKLogLevel, message: string, data?: unknown, source?: string) => {
@@ -282,6 +284,344 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       })),
     }, null, 2);
   }, [sdkLogs]);
+
+  useEffect(() => {
+    idleCodesRef.current = idleCodes;
+  }, [idleCodes]);
+
+  // Check if a state indicates the agent is actively handling a contact.
+  const isEngagedLikeState = useCallback((state: string): boolean => {
+    const normalized = state?.toLowerCase() || '';
+    const engagedLikeStates = [
+      'engaged',
+      'engagedother',
+      'engaged_other',
+      'connected',
+      'talking',
+      'oncall',
+      'on call',
+      'on_call',
+      'busy',
+      'reserved',
+      'handling',
+      'ringing',
+      'consulting',
+      'consult',
+    ];
+    return engagedLikeStates.includes(normalized);
+  }, []);
+
+  // Map SDK state strings to our AgentState type.
+  const mapSdkStateToAgentState = useCallback((sdkState: string): AgentState => {
+    const normalized = sdkState?.toLowerCase() || '';
+    
+    if (isEngagedLikeState(normalized)) {
+      return 'Engaged';
+    }
+    
+    const stateMap: Record<string, AgentState> = {
+      'available': 'Available',
+      'idle': 'Idle',
+      'rona': 'RONA',
+      'wrapup': 'WrapUp',
+      'wrap-up': 'WrapUp',
+      'wrap_up': 'WrapUp',
+      'aftercallwork': 'WrapUp',
+      'after_call_work': 'WrapUp',
+      'acw': 'WrapUp',
+      'offline': 'Offline',
+      'loggedin': 'Idle',
+      'logged_in': 'Idle',
+      'loggedout': 'Offline',
+      'logged_out': 'Offline',
+      'notready': 'Idle',
+      'not_ready': 'Idle',
+    };
+    return stateMap[normalized] || 'Idle';
+  }, [isEngagedLikeState]);
+
+  // Helper to validate if a string is a valid UUID format.
+  const isValidUUID = useCallback((str: string): boolean => {
+    if (!str || typeof str !== 'string') return false;
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    return uuidRegex.test(str);
+  }, []);
+
+  const normalizeSdkChannelType = useCallback((channel?: string | null): string | null => {
+    if (!channel || typeof channel !== 'string') return null;
+    const normalized = channel.trim().toLowerCase();
+    const channelMap: Record<string, string> = {
+      voice: 'telephony',
+      phone: 'telephony',
+      telephony: 'telephony',
+      chat: 'chat',
+      social: 'social',
+      email: 'email',
+      workitem: 'workItem',
+      work_item: 'workItem',
+      workitemchannel: 'workItem',
+      custommessaging: 'customMessaging',
+      custom_messaging: 'customMessaging',
+    };
+    return channelMap[normalized] || null;
+  }, []);
+
+  const getChannelStateMap = useCallback((source: any): Record<string, any> | null => {
+    const data = source?.data ?? source;
+    const maps = [
+      data?.agentChannelStateDetailMap,
+      data?.channelsStatesMap,
+      source?.agentChannelStateDetailMap,
+      source?.channelsStatesMap,
+    ];
+
+    for (const map of maps) {
+      if (map && typeof map === 'object' && !Array.isArray(map) && Object.keys(map).length > 0) {
+        return map;
+      }
+    }
+    return null;
+  }, []);
+
+  const getPreferredChannelStateDetail = useCallback((source: any): { channelType: string; detail: any } | null => {
+    const data = source?.data ?? source;
+    const directDetail = data?.agentChannelStateDetail || source?.agentChannelStateDetail;
+    const directChannel = normalizeSdkChannelType(data?.channelType || source?.channelType);
+
+    if (directDetail && typeof directDetail === 'object') {
+      return {
+        channelType: directChannel || 'telephony',
+        detail: directDetail,
+      };
+    }
+
+    const stateMap = getChannelStateMap(source);
+    if (!stateMap) return null;
+
+    const entries = Object.entries(stateMap)
+      .map(([channel, detail]) => ({ channelType: normalizeSdkChannelType(channel), detail }))
+      .filter((entry): entry is { channelType: string; detail: any } => !!entry.channelType && !!entry.detail);
+
+    return entries.find(entry => entry.channelType === 'telephony')
+      || entries.find(entry => typeof entry.detail?.agentState === 'string')
+      || entries[0]
+      || null;
+  }, [getChannelStateMap, normalizeSdkChannelType]);
+
+  const getIdleCodeFromSdkData = useCallback((sdkData: any, detail?: any): AgentStateInfo['idleCode'] | undefined => {
+    const data = sdkData?.data ?? sdkData;
+    const auxCodeId = detail?.auxCodeId || data?.auxCodeId || sdkData?.auxCodeId;
+    const auxCodeName = detail?.idleCodeName || data?.auxCodeName || sdkData?.auxCodeName;
+    const explicitIdleCode = data?.idleCode || sdkData?.idleCode;
+
+    if (explicitIdleCode?.id) {
+      return {
+        id: explicitIdleCode.id,
+        name: explicitIdleCode.name || auxCodeName || '',
+      };
+    }
+
+    if (!auxCodeId) return undefined;
+    const matchedCode = idleCodesRef.current.find(code => code.id === auxCodeId);
+    return {
+      id: auxCodeId,
+      name: auxCodeName || matchedCode?.name || '',
+    };
+  }, []);
+
+  const buildAgentStateSnapshot = useCallback((sdkData: any, source: string): (AgentStateInfo & { rawState: string; channelType?: string; source: string }) | null => {
+    if (!sdkData) return null;
+
+    const data = sdkData?.data ?? sdkData;
+    const channelState = getPreferredChannelStateDetail(sdkData);
+
+    if (channelState?.detail) {
+      const rawState = channelState.detail.agentState
+        || channelState.detail.agentStateToDisplay
+        || channelState.detail.localizedAgentState
+        || data?.subStatus
+        || data?.status
+        || 'Idle';
+
+      return {
+        state: mapSdkStateToAgentState(rawState),
+        idleCode: getIdleCodeFromSdkData(sdkData, channelState.detail),
+        lastStateChangeTime: channelState.detail.stateChangeTimestamp
+          || channelState.detail.lastIdleCodeChangeTimestamp
+          || data?.lastStateChangeTimestamp
+          || data?.eventTime
+          || Date.now(),
+        rawState,
+        channelType: channelState.channelType,
+        source,
+      };
+    }
+
+    const rawState = data?.subStatus || data?.status || sdkData?.subStatus || sdkData?.status;
+    if (!rawState) return null;
+
+    return {
+      state: mapSdkStateToAgentState(rawState),
+      idleCode: getIdleCodeFromSdkData(sdkData),
+      lastStateChangeTime: data?.lastStateChangeTimestamp || data?.eventTime || Date.now(),
+      rawState,
+      source,
+    };
+  }, [getIdleCodeFromSdkData, getPreferredChannelStateDetail, mapSdkStateToAgentState]);
+
+  const getProvisionedChannelTypes = useCallback((sdkData?: any): string[] => {
+    const data = sdkData?.data ?? sdkData ?? desktopRef.current?.agentStateInfo?.latestData;
+    const channelCandidates: string[] = [];
+
+    const pushChannel = (channel: unknown) => {
+      if (typeof channel !== 'string') return;
+      const normalized = normalizeSdkChannelType(channel);
+      if (normalized && !channelCandidates.includes(normalized)) {
+        channelCandidates.push(normalized);
+      }
+    };
+
+    const channelStateMap = getChannelStateMap(data);
+    if (channelStateMap) Object.keys(channelStateMap).forEach(pushChannel);
+
+    if (data?.channelsMap && typeof data.channelsMap === 'object') {
+      Object.keys(data.channelsMap).forEach(pushChannel);
+      Object.values(data.channelsMap).flat().forEach(pushChannel);
+    }
+
+    if (Array.isArray(data?.channelTypes)) data.channelTypes.forEach(pushChannel);
+    if (Array.isArray(data?.connectedChannels)) data.connectedChannels.forEach(pushChannel);
+    if (Array.isArray(data?.reservedAgentChannelIds)) data.reservedAgentChannelIds.forEach(pushChannel);
+
+    if (channelCandidates.includes('telephony')) {
+      return ['telephony', ...channelCandidates.filter(channel => channel !== 'telephony')];
+    }
+
+    return channelCandidates.length > 0 ? channelCandidates : ['telephony'];
+  }, [getChannelStateMap, normalizeSdkChannelType]);
+
+  // Helper to check if agent info is fully ready (not just truthy but with key fields).
+  const isAgentInfoReady = useCallback((agentInfo: any): boolean => {
+    if (!agentInfo) return false;
+    const hasIdentity = !!(agentInfo.agentName || agentInfo.agentId || agentInfo.agentProfileID);
+    const hasState = !!(agentInfo.status || agentInfo.subStatus || getPreferredChannelStateDetail(agentInfo));
+    return hasIdentity && hasState;
+  }, [getPreferredChannelStateDetail]);
+
+  const promoteIncomingTaskIfEngaged = useCallback(() => {
+    setIncomingTask(currentIncoming => {
+      if (!currentIncoming) return currentIncoming;
+
+      addSDKLog('info', '>>> PROMOTION: Agent Engaged with incomingTask - promoting to activeTasks <<<', {
+        taskId: currentIncoming.taskId,
+        ani: currentIncoming.ani,
+        customerName: currentIncoming.customerName,
+      }, 'WebexContext');
+      
+      if (ronaTimerRef.current) {
+        clearTimeout(ronaTimerRef.current);
+        ronaTimerRef.current = null;
+      }
+      
+      const rawContact = (currentIncoming as any)._rawContact;
+      const promotedTask: Task = {
+        taskId: currentIncoming.taskId,
+        mediaType: currentIncoming.mediaType,
+        mediaChannel: rawContact?.mediaChannel || (currentIncoming.mediaType === 'voice' ? 'telephony' : currentIncoming.mediaType),
+        state: 'connected',
+        direction: rawContact?.direction as 'inbound' | 'outbound' || 'inbound',
+        queueName: currentIncoming.queueName,
+        ani: currentIncoming.ani,
+        dnis: rawContact?.dnis || '',
+        startTime: currentIncoming.startTime,
+        isRecording: rawContact?.isRecording || false,
+        isMuted: false,
+        isHeld: false,
+        wrapUpRequired: true,
+        cadVariables: rawContact?.cadVariables || {},
+        customerName: currentIncoming.customerName,
+        customerEmail: rawContact?.customerEmail,
+        customerPhone: rawContact?.customerPhone || currentIncoming.ani,
+        mediaResourceId: rawContact?.mediaResourceId,
+        isConsult: false,
+        isPostCallConsult: false,
+      };
+      
+      setActiveTasks(prev => {
+        if (prev.some(t => t.taskId === promotedTask.taskId)) {
+          addSDKLog('info', 'Task already in activeTasks, skipping promotion', { taskId: promotedTask.taskId }, 'WebexContext');
+          return prev;
+        }
+        addSDKLog('info', 'Adding promoted task to activeTasks', { taskId: promotedTask.taskId }, 'WebexContext');
+        return [...prev, promotedTask];
+      });
+      setSelectedTaskId(promotedTask.taskId);
+      setCustomerProfile({
+        id: promotedTask.taskId,
+        name: promotedTask.customerName || promotedTask.ani || 'Unknown Customer',
+        email: promotedTask.customerEmail || '',
+        phone: promotedTask.customerPhone || promotedTask.ani || '',
+        company: rawContact?.company || '',
+        isVerified: false,
+        tags: [] as CustomerTag[],
+        interactionHistory: [] as CallLogEntry[],
+        cadVariables: promotedTask.cadVariables || {},
+      });
+      
+      return null;
+    });
+
+    (async () => {
+      try {
+        addSDKLog('info', 'Agent Engaged - attempting getTaskMap sync...', null, 'WebexContext');
+        const actionsAvailable = desktopRef.current?.actions;
+        addSDKLog('debug', 'Desktop.actions availability', {
+          hasActions: !!actionsAvailable,
+          actionKeys: actionsAvailable ? Object.keys(actionsAvailable) : [],
+          getTaskMapType: typeof actionsAvailable?.getTaskMap,
+        }, 'WebexContext');
+        
+        if (actionsAvailable?.getTaskMap) {
+          const taskMap = await actionsAvailable.getTaskMap();
+          addSDKLog('info', 'getTaskMap on Engaged result', {
+            taskMapType: typeof taskMap,
+            taskMapKeys: taskMap ? Object.keys(taskMap) : [],
+            taskMap,
+          }, 'WebexContext');
+        }
+      } catch (e) {
+        addSDKLog('warn', 'getTaskMap on Engaged failed', e, 'WebexContext');
+      }
+    })();
+  }, [addSDKLog]);
+
+  const syncAgentStateFromSdkData = useCallback((sdkData: any, source: string) => {
+    const snapshot = buildAgentStateSnapshot(sdkData, source);
+    if (!snapshot) {
+      addSDKLog('warn', 'Unable to derive agent state from SDK data', { source, sdkData }, 'WebexContext');
+      return null;
+    }
+
+    setAgentStateInfo({
+      state: snapshot.state,
+      idleCode: snapshot.idleCode,
+      lastStateChangeTime: snapshot.lastStateChangeTime,
+    });
+
+    addSDKLog('info', `Agent state synchronized to: ${snapshot.state}`, {
+      source,
+      rawState: snapshot.rawState,
+      channelType: snapshot.channelType,
+      idleCode: snapshot.idleCode,
+      lastStateChangeTime: snapshot.lastStateChangeTime,
+    }, 'WebexContext');
+
+    if (snapshot.state === 'Engaged') {
+      promoteIncomingTaskIfEngaged();
+    }
+
+    return snapshot;
+  }, [addSDKLog, buildAgentStateSnapshot, promoteIncomingTaskIfEngaged]);
 
   // Initialize SDK and auto-fetch agent session
   const initialize = useCallback(async () => {
@@ -421,13 +761,8 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
               dialNumber: agentInfo.dn || '',
             });
             
-            // Map SDK status to our AgentState
-            const mappedState = mapSdkStateToAgentState(agentInfo.subStatus || agentInfo.status || 'Idle');
-            setAgentStateInfo({
-              state: mappedState,
-              idleCode: agentInfo.idleCode || (agentInfo.auxCodeId ? { id: agentInfo.auxCodeId, name: agentInfo.auxCodeName || '' } : undefined),
-              lastStateChangeTime: agentInfo.lastStateChangeTimestamp || Date.now(),
-            });
+            const initialStateSnapshot = syncAgentStateFromSdkData(agentInfo, 'initial latestData');
+            const mappedState = initialStateSnapshot?.state || mapSdkStateToAgentState(agentInfo.subStatus || agentInfo.status || 'Idle');
             
             // Source idleCodes and wrapUpCodes from latestData if available
             if (agentInfo.idleCodes && Array.isArray(agentInfo.idleCodes) && agentInfo.idleCodes.length > 0) {
@@ -558,127 +893,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
             // Re-read the full latestData to get complete state and sync config
             const latestData = desktopRef.current?.agentStateInfo?.latestData;
             if (latestData) {
-              const rawStatus = latestData.status || '';
-              const rawSubStatus = latestData.subStatus || '';
-              const stateToMap = rawSubStatus || rawStatus || 'Idle';
-              const mappedState = mapSdkStateToAgentState(stateToMap);
-              const isEngaged = isEngagedLikeState(stateToMap);
-              
-              // Enhanced diagnostics for hardphone detection
-              addSDKLog('info', '>>> AGENT STATE UPDATE - RAW VALUES <<<', {
-                rawStatus,
-                rawSubStatus,
-                stateToMap,
-                mappedState,
-                isEngagedLike: isEngaged,
-              }, 'WebexContext');
-              console.log('[WebexCC] Agent state mapping:', { rawStatus, rawSubStatus, stateToMap, mappedState, isEngagedLike: isEngaged });
-              
-              setAgentStateInfo({
-                state: mappedState,
-                idleCode: latestData.idleCode || (latestData.auxCodeId ? { id: latestData.auxCodeId, name: latestData.auxCodeName || '' } : undefined),
-                lastStateChangeTime: latestData.lastStateChangeTimestamp || Date.now(),
-              });
-              addSDKLog('info', `Agent state changed to: ${mappedState}`, { status: rawStatus, subStatus: rawSubStatus }, 'WebexContext');
-              
-              // PROMOTION LOGIC: If agent becomes Engaged and we have an incomingTask, promote it to activeTasks
-              // This handles hardphone answer scenarios where eAgentContactAssigned may not fire
-              if (mappedState === 'Engaged') {
-                setIncomingTask(currentIncoming => {
-                  if (currentIncoming) {
-                    addSDKLog('info', '>>> PROMOTION: Agent Engaged with incomingTask - promoting to activeTasks <<<', {
-                      taskId: currentIncoming.taskId,
-                      ani: currentIncoming.ani,
-                      customerName: currentIncoming.customerName,
-                    }, 'WebexContext');
-                    
-                    // Clear RONA timer if any
-                    if (ronaTimerRef.current) {
-                      clearTimeout(ronaTimerRef.current);
-                      ronaTimerRef.current = null;
-                    }
-                    
-                    // Get raw contact data if stored, otherwise use incomingTask data
-                    const rawContact = (currentIncoming as any)._rawContact;
-                    
-                    const promotedTask: Task = {
-                      taskId: currentIncoming.taskId,
-                      mediaType: currentIncoming.mediaType,
-                      mediaChannel: rawContact?.mediaChannel || (currentIncoming.mediaType === 'voice' ? 'telephony' : currentIncoming.mediaType),
-                      state: 'connected',
-                      direction: rawContact?.direction as 'inbound' | 'outbound' || 'inbound',
-                      queueName: currentIncoming.queueName,
-                      ani: currentIncoming.ani,
-                      dnis: rawContact?.dnis || '',
-                      startTime: currentIncoming.startTime,
-                      isRecording: rawContact?.isRecording || false,
-                      isMuted: false,
-                      isHeld: false,
-                      wrapUpRequired: true,
-                      cadVariables: rawContact?.cadVariables || {},
-                      customerName: currentIncoming.customerName,
-                      customerEmail: rawContact?.customerEmail,
-                      customerPhone: rawContact?.customerPhone || currentIncoming.ani,
-                      mediaResourceId: rawContact?.mediaResourceId,
-                      isConsult: false,
-                      isPostCallConsult: false,
-                    };
-                    
-                    // Add to activeTasks
-                    setActiveTasks(prev => {
-                      // Don't add if already exists
-                      if (prev.some(t => t.taskId === promotedTask.taskId)) {
-                        addSDKLog('info', 'Task already in activeTasks, skipping promotion', { taskId: promotedTask.taskId }, 'WebexContext');
-                        return prev;
-                      }
-                      addSDKLog('info', 'Adding promoted task to activeTasks', { taskId: promotedTask.taskId }, 'WebexContext');
-                      return [...prev, promotedTask];
-                    });
-                    setSelectedTaskId(promotedTask.taskId);
-                    
-                    // Populate customer profile
-                    setCustomerProfile({
-                      id: promotedTask.taskId,
-                      name: promotedTask.customerName || promotedTask.ani || 'Unknown Customer',
-                      email: promotedTask.customerEmail || '',
-                      phone: promotedTask.customerPhone || promotedTask.ani || '',
-                      company: rawContact?.company || '',
-                      isVerified: false,
-                      tags: [] as CustomerTag[],
-                      interactionHistory: [] as CallLogEntry[],
-                      cadVariables: promotedTask.cadVariables || {},
-                    });
-                    
-                    // Return null to clear incomingTask
-                    return null;
-                  }
-                  return currentIncoming;
-                });
-                
-                // Also try getTaskMap when agent becomes Engaged to catch any missed tasks
-                (async () => {
-                  try {
-                    addSDKLog('info', 'Agent Engaged - attempting getTaskMap sync...', null, 'WebexContext');
-                    const actionsAvailable = desktopRef.current?.actions;
-                    addSDKLog('debug', 'Desktop.actions availability', {
-                      hasActions: !!actionsAvailable,
-                      actionKeys: actionsAvailable ? Object.keys(actionsAvailable) : [],
-                      getTaskMapType: typeof actionsAvailable?.getTaskMap,
-                    }, 'WebexContext');
-                    
-                    if (actionsAvailable?.getTaskMap) {
-                      const taskMap = await actionsAvailable.getTaskMap();
-                      addSDKLog('info', 'getTaskMap on Engaged result', {
-                        taskMapType: typeof taskMap,
-                        taskMapKeys: taskMap ? Object.keys(taskMap) : [],
-                        taskMap,
-                      }, 'WebexContext');
-                    }
-                  } catch (e) {
-                    addSDKLog('warn', 'getTaskMap on Engaged failed', e, 'WebexContext');
-                  }
-                })();
-              }
+              syncAgentStateFromSdkData(latestData, 'agentStateInfo.updated');
               
               // Also sync idleCodes and wrapUpCodes if they've been populated
               if (latestData.idleCodes && Array.isArray(latestData.idleCodes) && latestData.idleCodes.length > 0) {
@@ -695,6 +910,29 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
               }
             }
           });
+
+          if (typeof desktopRef.current.agentStateInfo.addEventListener === 'function') {
+            desktopRef.current.agentStateInfo.addEventListener('eAgentChannelStateChanged', (event: any) => {
+              addSDKLog('info', '>>> eAgentChannelStateChanged EVENT FIRED <<<', {
+                channelType: event?.data?.channelType || event?.channelType,
+                agentChannelStateDetail: event?.data?.agentChannelStateDetail || event?.agentChannelStateDetail,
+                connectedChannels: event?.data?.connectedChannels || event?.connectedChannels,
+                trackingId: event?.data?.trackingId || event?.trackingId,
+              }, 'WebexContext');
+              syncAgentStateFromSdkData(event, 'eAgentChannelStateChanged');
+            });
+            addSDKLog('info', 'Registered: eAgentChannelStateChanged listener', null, 'WebexContext');
+
+            desktopRef.current.agentStateInfo.addEventListener('eAgentChannelReloginSuccess', (event: any) => {
+              addSDKLog('info', '>>> eAgentChannelReloginSuccess EVENT FIRED <<<', {
+                status: event?.data?.status || event?.status,
+                channelTypes: getProvisionedChannelTypes(event),
+                trackingId: event?.data?.trackingId || event?.trackingId,
+              }, 'WebexContext');
+              syncAgentStateFromSdkData(event, 'eAgentChannelReloginSuccess');
+            });
+            addSDKLog('info', 'Registered: eAgentChannelReloginSuccess listener', null, 'WebexContext');
+          }
           
           // Fetch idle codes from the SDK
           try {
@@ -981,77 +1219,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setIsLoading(false);
     }
-  }, [addSDKLog]);
-  
-  // Check if a state indicates the agent is actively handling a contact
-  // This covers various Webex CC states that indicate an active call/interaction
-  const isEngagedLikeState = (state: string): boolean => {
-    const normalized = state?.toLowerCase() || '';
-    const engagedLikeStates = [
-      'engaged',
-      'connected', 
-      'talking',
-      'oncall',
-      'on call',
-      'on_call',
-      'busy',
-      'reserved',
-      'handling',
-      'ringing',
-      'consulting',
-      'consult',
-    ];
-    return engagedLikeStates.includes(normalized);
-  };
-  
-  // Map SDK state strings to our AgentState type
-  // SDK uses status/subStatus - status is main state, subStatus provides more detail
-  // First checks for "Engaged-like" states to ensure hardphone calls are detected
-  const mapSdkStateToAgentState = (sdkState: string): AgentState => {
-    const normalized = sdkState?.toLowerCase() || '';
-    
-    // First check if this is an "Engaged-like" state (handles hardphone scenarios)
-    if (isEngagedLikeState(normalized)) {
-      return 'Engaged';
-    }
-    
-    const stateMap: Record<string, AgentState> = {
-      'available': 'Available',
-      'idle': 'Idle',
-      'rona': 'RONA',
-      'wrapup': 'WrapUp',
-      'wrap-up': 'WrapUp',
-      'wrap_up': 'WrapUp',
-      'aftercallwork': 'WrapUp',
-      'after_call_work': 'WrapUp',
-      'acw': 'WrapUp',
-      'offline': 'Offline',
-      'loggedin': 'Idle',
-      'logged_in': 'Idle',
-      'loggedout': 'Offline',
-      'logged_out': 'Offline',
-      'notready': 'Idle',
-      'not_ready': 'Idle',
-    };
-    // Default to Idle instead of Offline for unknown states
-    return stateMap[normalized] || 'Idle';
-  };
-  
-  // Helper to validate if a string is a valid UUID format
-  const isValidUUID = (str: string): boolean => {
-    if (!str || typeof str !== 'string') return false;
-    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-    return uuidRegex.test(str);
-  };
-  
-  // Helper to check if agent info is fully ready (not just truthy but with key fields)
-  const isAgentInfoReady = (agentInfo: any): boolean => {
-    if (!agentInfo) return false;
-    // Must have at least agentName or agentId, plus a status
-    const hasIdentity = !!(agentInfo.agentName || agentInfo.agentId || agentInfo.agentProfileID);
-    const hasStatus = !!(agentInfo.status || agentInfo.subStatus);
-    return hasIdentity && hasStatus;
-  };
+  }, [addSDKLog, getProvisionedChannelTypes, isAgentInfoReady, mapSdkStateToAgentState, syncAgentStateFromSdkData]);
   
   // ============================================================================
   // SDK Contact Data Extractor
@@ -1415,8 +1583,8 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
         const agentStateInfo = desktopRef.current.agentStateInfo;
         const hasV2 = typeof agentStateInfo?.stateChangeV2 === 'function';
 
-        // Determine channel types the agent is provisioned for. Default to telephony.
-        const channelType: string[] = ['telephony'];
+        const latestData = agentStateInfo?.latestData;
+        const channelType = getProvisionedChannelTypes(latestData);
 
         if (state === 'Idle') {
           // Idle REQUIRES a valid UUID auxCodeId
@@ -1429,23 +1597,31 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
 
           if (hasV2) {
             const payload = { channelType, state: 'Idle' as const, auxCodeId: idleCodeId };
-            await agentStateInfo.stateChangeV2(payload);
-            addSDKLog('info', `stateChangeV2 request sent`, payload, 'WebexContext');
+            const request = { data: payload };
+            lastStateChangePayloadRef.current = request;
+            await agentStateInfo.stateChangeV2(request);
+            addSDKLog('info', `stateChangeV2 request sent`, request, 'WebexContext');
           } else {
             addSDKLog('warn', 'stateChangeV2 unavailable, falling back to legacy stateChange', null, 'WebexContext');
-            await agentStateInfo.stateChange({ state: 'Idle', auxCodeIdArray: idleCodeId });
-            addSDKLog('info', `Legacy stateChange sent: Idle with code ${idleCodeId}`, null, 'WebexContext');
+            const request = { data: { state: 'Idle', auxCodeIdArray: idleCodeId } };
+            lastStateChangePayloadRef.current = request;
+            await agentStateInfo.stateChange(request);
+            addSDKLog('info', `Legacy stateChange sent: Idle with code ${idleCodeId}`, request, 'WebexContext');
           }
         } else if (state === 'Available') {
           if (hasV2) {
             const payload = { channelType, state: 'Available' as const };
-            await agentStateInfo.stateChangeV2(payload);
-            addSDKLog('info', `stateChangeV2 request sent`, payload, 'WebexContext');
+            const request = { data: payload };
+            lastStateChangePayloadRef.current = request;
+            await agentStateInfo.stateChangeV2(request);
+            addSDKLog('info', `stateChangeV2 request sent`, request, 'WebexContext');
           } else {
             addSDKLog('warn', 'stateChangeV2 unavailable, falling back to legacy stateChange', null, 'WebexContext');
             // Legacy path: pass sentinel "0" (empty string is rejected with reasonCode 33)
-            await agentStateInfo.stateChange({ state: 'Available', auxCodeIdArray: '0' });
-            addSDKLog('info', `Legacy stateChange sent: Available`, null, 'WebexContext');
+            const request = { data: { state: 'Available', auxCodeIdArray: '0' } };
+            lastStateChangePayloadRef.current = request;
+            await agentStateInfo.stateChange(request);
+            addSDKLog('info', `Legacy stateChange sent: Available`, request, 'WebexContext');
           }
         } else {
           addSDKLog('warn', `State ${state} not directly settable via stateChange API`, null, 'WebexContext');
@@ -1463,11 +1639,15 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       }
       console.log('[WebexCC] State change requested:', state, idleCodeId);
     } catch (error) {
-      addSDKLog('error', `State change failed:`, error, 'WebexContext');
+      addSDKLog('error', `State change failed:`, {
+        error,
+        lastRequestPayload: lastStateChangePayloadRef.current,
+        latestDataSnapshot: desktopRef.current?.agentStateInfo?.latestData,
+      }, 'WebexContext');
       console.error('[WebexCC] State change failed:', error);
       // Don't update local state on error - let SDK events drive state
     }
-  }, [runningInDemoMode, idleCodes, addSDKLog]);
+  }, [runningInDemoMode, idleCodes, addSDKLog, getProvisionedChannelTypes, isValidUUID]);
 
   // Accept incoming task
   const acceptTask = useCallback(async (taskId: string) => {
