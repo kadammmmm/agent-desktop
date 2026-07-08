@@ -2621,18 +2621,23 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     if (!runningInDemoMode && desktopRef.current) {
       try {
         const ac: any = desktopRef.current.agentContact;
-        const method = ac.consultConferenceEnd || ac.conferenceEnd || ac.consultEnd;
-        if (!method) {
-          throw new Error('SDK does not expose a consultConferenceEnd method');
+        // V2 SDK exposes a first-class exitConference(interactionId); prefer it.
+        if (typeof ac.exitConference === 'function') {
+          addSDKLog('info', 'Initiating exitConference (V2)', { taskId }, 'Conference');
+          await ac.exitConference({ interactionId: taskId });
+          addSDKLog('info', 'exitConference successful', { taskId }, 'Conference');
+        } else {
+          const method = ac.consultConferenceEnd || ac.conferenceEnd || ac.consultEnd;
+          if (!method) throw new Error('SDK does not expose an exitConference method');
+          addSDKLog('info', 'Initiating consultConferenceEnd (fallback)', { taskId, mediaResourceId: task?.mediaResourceId }, 'Conference');
+          await method.call(ac, {
+            interactionId: taskId,
+            isConsult: true,
+            taskId,
+            mediaResourceId: task?.mediaResourceId,
+          });
+          addSDKLog('info', 'consultConferenceEnd successful', { taskId }, 'Conference');
         }
-        addSDKLog('info', 'Initiating consultConferenceEnd (exit conference)', { taskId, mediaResourceId: task?.mediaResourceId }, 'Conference');
-        await method.call(ac, {
-          interactionId: taskId,
-          isConsult: true,
-          taskId,
-          mediaResourceId: task?.mediaResourceId,
-        });
-        addSDKLog('info', 'consultConferenceEnd successful', { taskId }, 'Conference');
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         addSDKLog('error', 'consultConferenceEnd failed', { error: msg }, 'Conference');
