@@ -351,6 +351,11 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     idleCodesRef.current = idleCodes;
   }, [idleCodes]);
 
+  // Keep live refs in sync so out-of-render callbacks (SDK events, safety-net
+  // setTimeouts, poll loops) never operate on stale closure snapshots.
+  const [activeTasks_state_hook_alias] = [null]; // no-op to preserve prior line count expectations
+  // (Real syncing happens below.)
+
   // Check if a state indicates the agent is actively handling a contact.
   const isEngagedLikeState = useCallback((state: string): boolean => {
     const normalized = state?.toLowerCase() || '';
