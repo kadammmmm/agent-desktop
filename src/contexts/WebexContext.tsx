@@ -353,8 +353,26 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
 
   // Keep live refs in sync so out-of-render callbacks (SDK events, safety-net
   // setTimeouts, poll loops) never operate on stale closure snapshots.
-  const [activeTasks_state_hook_alias] = [null]; // no-op to preserve prior line count expectations
-  // (Real syncing happens below.)
+  useEffect(() => { activeTasksRef.current = activeTasks; }, [activeTasks]);
+  useEffect(() => { incomingTaskRef.current = incomingTask; }, [incomingTask]);
+  useEffect(() => { agentStateRef.current = agentState; }, [agentState]);
+
+  // Return true if this (event, interactionId) was already handled in the
+  // last `ttlMs` ms. Used to swallow duplicate SDK deliveries.
+  const isDuplicateEvent = useCallback((eventName: string, interactionId: string | undefined, ttlMs = 3000): boolean => {
+    if (!interactionId) return false;
+    const key = `${eventName}:${interactionId}`;
+    const now = Date.now();
+    // Sweep expired entries opportunistically.
+    for (const [k, ts] of handledEventsRef.current) {
+      if (now - ts > ttlMs) handledEventsRef.current.delete(k);
+    }
+    const last = handledEventsRef.current.get(key);
+    if (last !== undefined && now - last < ttlMs) return true;
+    handledEventsRef.current.set(key, now);
+    return false;
+  }, []);
+
 
   // Check if a state indicates the agent is actively handling a contact.
   const isEngagedLikeState = useCallback((state: string): boolean => {
