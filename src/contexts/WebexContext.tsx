@@ -1941,6 +1941,47 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     });
   }, [runningInDemoMode, addSDKLog]);
 
+  // Consult to Entry Point (warm transfer start)
+  const consultEntryPoint = useCallback(async (taskId: string, entryPointId: string) => {
+    const ep = entryPoints.find(e => e.id === entryPointId);
+    if (!runningInDemoMode && desktopRef.current) {
+      try {
+        addSDKLog('info', 'Initiating consult to entryPoint', { taskId, entryPointId }, 'Consult');
+        await desktopRef.current.agentContact.consult({
+          interactionId: taskId,
+          data: { to: entryPointId, destinationType: 'entryPoint' },
+        });
+        addSDKLog('info', 'consult to entryPoint request accepted', { taskId, entryPointId }, 'Consult');
+        setActiveTasks(prev => prev.map(t =>
+          t.taskId === taskId ? { ...t, state: 'consulting', isHeld: true } : t
+        ));
+        setConsultState({
+          isConsulting: true,
+          consultTarget: { type: 'entryPoint', id: entryPointId, name: ep?.name || entryPointId, destinationType: 'entryPoint' },
+          consultStartTime: Date.now(),
+          consultConnected: false,
+        });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        addSDKLog('error', 'consult to entryPoint failed', { error: msg }, 'Consult');
+        toast({ title: 'Consult failed', description: msg, variant: 'destructive' });
+      }
+      return;
+    }
+    // Demo mode
+    setActiveTasks(prev => prev.map(t =>
+      t.taskId === taskId ? { ...t, state: 'consulting', isHeld: true } : t
+    ));
+    setConsultState({
+      isConsulting: true,
+      consultTarget: { type: 'entryPoint', id: entryPointId, name: ep?.name || entryPointId, destinationType: 'entryPoint' },
+      consultStartTime: Date.now(),
+      consultConnected: true,
+    });
+  }, [entryPoints, runningInDemoMode, addSDKLog]);
+
+
+
   // Complete transfer (after consult)
   const completeTransfer = useCallback(async (taskId: string) => {
     if (!runningInDemoMode && desktopRef.current) {
