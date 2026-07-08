@@ -1119,6 +1119,94 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
             ));
           });
           addSDKLog('info', 'Registered: eCallRecordingStarted listener', null, 'WebexContext');
+
+          // ---- Additional agentContact events for error recovery & rich UI ----
+          const registerSafe = (evt: string, handler: (e: any) => void) => {
+            try {
+              desktopRef.current.agentContact.addEventListener(evt, handler);
+              addSDKLog('info', `Registered: ${evt} listener`, null, 'WebexContext');
+            } catch (err) {
+              addSDKLog('warn', `Could not register ${evt}`, { error: err instanceof Error ? err.message : String(err) }, 'WebexContext');
+            }
+          };
+
+          registerSafe('eAgentConsultEndFailed', (event: any) => {
+            addSDKLog('error', '>>> eAgentConsultEndFailed <<<', event, 'Consult');
+            setConsultState({ isConsulting: false });
+            toast({ title: 'Consult end failed', description: 'Could not end the consult session.', variant: 'destructive' });
+          });
+          registerSafe('eAgentCtqCancelled', (event: any) => {
+            addSDKLog('info', '>>> eAgentCtqCancelled <<<', event, 'Consult');
+            setConsultState({ isConsulting: false });
+          });
+          registerSafe('eAgentCtqFailed', (event: any) => {
+            addSDKLog('error', '>>> eAgentCtqFailed <<<', event, 'Consult');
+            toast({ title: 'Consult-to-queue failed', description: 'Please try a different target.', variant: 'destructive' });
+          });
+          registerSafe('eAgentCtqCancelFailed', (event: any) => {
+            addSDKLog('error', '>>> eAgentCtqCancelFailed <<<', event, 'Consult');
+          });
+          registerSafe('eAgentConsultTransferring', (event: any) => {
+            addSDKLog('info', '>>> eAgentConsultTransferring <<<', event, 'Consult');
+          });
+          registerSafe('eAgentContactAniUpdated', (event: any) => {
+            addSDKLog('info', '>>> eAgentContactAniUpdated <<<', event, 'WebexContext');
+            const c = extractContactData(event);
+            if (c.interactionId && c.ani) {
+              setActiveTasks(prev => prev.map(t =>
+                t.taskId === c.interactionId ? { ...t, ani: c.ani, customerPhone: c.customerPhone || c.ani } : t
+              ));
+            }
+          });
+          registerSafe('eContactOwnerChanged', (event: any) => {
+            addSDKLog('info', '>>> eContactOwnerChanged <<<', event, 'WebexContext');
+          });
+          registerSafe('eParticipantJoinedConference', (event: any) => {
+            addSDKLog('info', '>>> eParticipantJoinedConference <<<', event, 'Conference');
+          });
+          registerSafe('eParticipantLeftConference', (event: any) => {
+            addSDKLog('info', '>>> eParticipantLeftConference <<<', event, 'Conference');
+          });
+          registerSafe('eAgentConsultConferenceEnded', (event: any) => {
+            addSDKLog('info', '>>> eAgentConsultConferenceEnded <<<', event, 'Conference');
+            const c = extractContactData(event);
+            if (c.interactionId) {
+              setActiveTasks(prev => prev.map(t =>
+                t.taskId === c.interactionId ? { ...t, state: 'connected' } : t
+              ));
+            }
+          });
+
+          // ---- Screen pop (Desktop.screenpop -> eScreenPop) ----
+          try {
+            if (desktopRef.current.screenpop?.addEventListener) {
+              desktopRef.current.screenpop.addEventListener('eScreenPop', (event: any) => {
+                addSDKLog('info', '>>> eScreenPop EVENT FIRED <<<', event, 'ScreenPop');
+                const payload = event?.data ?? event ?? {};
+                const url: string | undefined =
+                  payload.screenPopUrl || payload.url || payload.data?.url;
+                const interactionId: string | undefined =
+                  payload.interactionId || payload.data?.interactionId;
+                const data: Record<string, unknown> | undefined =
+                  payload.screenPopData || payload.data?.screenPopData ||
+                  (typeof payload.data === 'object' && !url ? payload.data : undefined);
+                setScreenPop({
+                  interactionId,
+                  url,
+                  type: payload.type || payload.screenPopType,
+                  autoOpen: payload.autoOpen !== false,
+                  data,
+                  raw: event,
+                });
+              });
+              addSDKLog('info', 'Registered: eScreenPop listener', null, 'WebexContext');
+            } else {
+              addSDKLog('warn', 'screenpop module not available', null, 'WebexContext');
+            }
+          } catch (e) {
+            addSDKLog('warn', 'Could not register eScreenPop listener', { error: e instanceof Error ? e.message : String(e) }, 'WebexContext');
+          }
+
           
           // Listen for outdial failures
           try {
