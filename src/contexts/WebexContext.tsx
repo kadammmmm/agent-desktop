@@ -1420,7 +1420,10 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
             addSDKLog('warn', 'Could not register campaign dialer listeners', { error: e instanceof Error ? e.message : String(e) }, 'WebexContext');
           }
 
+          } // end: if (!listenersRegisteredRef.current) else { ... }
+
           addSDKLog('info', 'SDK initialization complete - all event listeners registered', null, 'WebexContext');
+
 
           
           // Hydrate current interactions from TaskMap
