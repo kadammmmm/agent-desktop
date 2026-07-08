@@ -6,8 +6,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import {
-  Users, Layers, Phone, Star, Search,
-  ArrowRight, PhoneForwarded, UserPlus, Clock, X, Check, RefreshCw
+  Users, Layers, Phone, Star, Search, DoorOpen,
+  ArrowRight, PhoneForwarded, UserPlus, Clock, X, Check, RefreshCw,
+  Pause, Play, LogOut, PhoneOff,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -16,28 +17,35 @@ export function TransferConsultPanel() {
     queues,
     teamAgents,
     buddyAgents,
+    entryPoints,
     activeTasks,
     selectedTaskId,
     consultState,
     transferToQueue,
     transferToAgent,
     transferToDN,
+    transferToEntryPoint,
     consultAgent,
     consultQueue,
     consultDN,
+    consultEntryPoint,
     completeTransfer,
     cancelConsult,
     conferenceCall,
+    exitConference,
+    holdTask,
+    resumeTask,
     toggleFavoriteAgent,
     fetchBuddyAgents,
   } = useWebex();
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [queueSearch, setQueueSearch] = useState('');
+  const [epSearch, setEpSearch] = useState('');
   const [dialNumber, setDialNumber] = useState('');
   const [transferType, setTransferType] = useState<'blind' | 'consult'>('blind');
   const [isRefreshingBuddies, setIsRefreshingBuddies] = useState(false);
 
-  // Fetch buddy agents on mount
   useEffect(() => {
     fetchBuddyAgents();
   }, [fetchBuddyAgents]);
@@ -48,7 +56,6 @@ export function TransferConsultPanel() {
     setIsRefreshingBuddies(false);
   };
 
-  // Combine buddy agents with team agents, preferring buddy agents data for duplicates
   const allAgents = [...buddyAgents];
   teamAgents.forEach(ta => {
     if (!allAgents.find(ba => ba.agentId === ta.agentId)) {
@@ -61,6 +68,12 @@ export function TransferConsultPanel() {
   const filteredAgents = allAgents.filter(a =>
     a.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
     a.teamName.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+  const filteredQueues = queues.filter(q =>
+    q.name.toLowerCase().includes(queueSearch.toLowerCase())
+  );
+  const filteredEntryPoints = entryPoints.filter(ep =>
+    ep.name.toLowerCase().includes(epSearch.toLowerCase())
   );
 
   const getStateColor = (state: string) => {
@@ -75,31 +88,71 @@ export function TransferConsultPanel() {
 
   const handleAgentAction = (agentId: string) => {
     if (!task) return;
-    if (transferType === 'blind') {
-      transferToAgent(task.taskId, agentId);
-    } else {
-      consultAgent(task.taskId, agentId);
-    }
+    if (transferType === 'blind') transferToAgent(task.taskId, agentId);
+    else consultAgent(task.taskId, agentId);
   };
 
   const handleQueueAction = (queueId: string) => {
     if (!task) return;
-    if (transferType === 'blind') {
-      transferToQueue(task.taskId, queueId);
-    } else {
-      consultQueue(task.taskId, queueId);
-    }
+    if (transferType === 'blind') transferToQueue(task.taskId, queueId);
+    else consultQueue(task.taskId, queueId);
+  };
+
+  const handleEntryPointAction = (entryPointId: string) => {
+    if (!task) return;
+    if (transferType === 'blind') transferToEntryPoint(task.taskId, entryPointId);
+    else consultEntryPoint(task.taskId, entryPointId);
   };
 
   const handleDNAction = () => {
     if (!task || !dialNumber) return;
-    if (transferType === 'blind') {
-      transferToDN(task.taskId, dialNumber);
-    } else {
-      consultDN(task.taskId, dialNumber);
-    }
+    if (transferType === 'blind') transferToDN(task.taskId, dialNumber);
+    else consultDN(task.taskId, dialNumber);
     setDialNumber('');
   };
+
+  // Active conference view (agent + customer + consulted party all bridged)
+  if (task && task.state === 'conferencing') {
+    return (
+      <div className="h-full flex flex-col p-4 animate-fade-in">
+        <div className="flex-1 flex flex-col items-center justify-center text-center">
+          <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center mb-4">
+            <UserPlus className="w-10 h-10 text-primary" />
+          </div>
+          <h3 className="text-lg font-semibold mb-2">Conference active</h3>
+          {consultState.consultTarget && (
+            <>
+              <p className="text-2xl font-bold text-primary mb-1">
+                {consultState.consultTarget.name}
+              </p>
+              <p className="text-sm text-muted-foreground capitalize mb-4">
+                {consultState.consultTarget.type}
+              </p>
+            </>
+          )}
+        </div>
+
+        <div className="space-y-2">
+          <Button
+            variant="outline"
+            className="w-full"
+            onClick={() => exitConference(task.taskId)}
+          >
+            <LogOut className="w-4 h-4 mr-2" />
+            Exit Conference (customer stays)
+          </Button>
+          <Button
+            variant="ghost"
+            className="w-full text-destructive hover:text-destructive"
+            onClick={() => cancelConsult(task.taskId)}
+          >
+            <PhoneOff className="w-4 h-4 mr-2" />
+            End Consulted Party
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   // Consult in progress view
   if (consultState.isConsulting && task) {
@@ -108,6 +161,7 @@ export function TransferConsultPanel() {
       : 0;
     const minutes = Math.floor(consultDuration / 60);
     const seconds = consultDuration % 60;
+    const customerIsHeld = task.isHeld;
 
     return (
       <div className="h-full flex flex-col p-4 animate-fade-in">
@@ -147,6 +201,17 @@ export function TransferConsultPanel() {
           >
             <UserPlus className="w-4 h-4 mr-2" />
             Conference
+          </Button>
+          <Button
+            variant="outline"
+            className="w-full"
+            onClick={() => customerIsHeld ? resumeTask(task.taskId) : holdTask(task.taskId)}
+          >
+            {customerIsHeld ? (
+              <><Play className="w-4 h-4 mr-2" /> Resume Customer</>
+            ) : (
+              <><Pause className="w-4 h-4 mr-2" /> Hold Customer</>
+            )}
           </Button>
           <Button
             variant="ghost"
@@ -242,6 +307,10 @@ export function TransferConsultPanel() {
             <Layers className="w-3 h-3 mr-1" />
             Queues
           </TabsTrigger>
+          <TabsTrigger value="entrypoints" className="text-xs">
+            <DoorOpen className="w-3 h-3 mr-1" />
+            Entry Pts
+          </TabsTrigger>
           <TabsTrigger value="number" className="text-xs">
             <Phone className="w-3 h-3 mr-1" />
             Number
@@ -260,9 +329,9 @@ export function TransferConsultPanel() {
                 className="pl-9"
               />
             </div>
-            <Button 
-              variant="outline" 
-              size="icon" 
+            <Button
+              variant="outline"
+              size="icon"
               onClick={handleRefreshBuddyAgents}
               disabled={isRefreshingBuddies}
               title="Refresh buddy agents"
@@ -270,8 +339,7 @@ export function TransferConsultPanel() {
               <RefreshCw className={cn("w-4 h-4", isRefreshingBuddies && "animate-spin")} />
             </Button>
           </div>
-          
-          {/* Buddy Agents indicator */}
+
           {buddyAgents.length > 0 && (
             <div className="px-3 pb-2">
               <Badge variant="outline" className="text-xs">
@@ -342,10 +410,21 @@ export function TransferConsultPanel() {
         </TabsContent>
 
         {/* Queues Tab */}
-        <TabsContent value="queues" className="flex-1 overflow-hidden mt-0">
-          <ScrollArea className="h-full p-3">
-            <div className="space-y-2">
-              {queues.map(queue => (
+        <TabsContent value="queues" className="flex-1 overflow-hidden mt-0 flex flex-col">
+          <div className="p-3">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                placeholder="Search queues..."
+                value={queueSearch}
+                onChange={(e) => setQueueSearch(e.target.value)}
+                className="pl-9"
+              />
+            </div>
+          </div>
+          <ScrollArea className="flex-1 px-3">
+            <div className="space-y-2 pb-3">
+              {filteredQueues.map(queue => (
                 <div
                   key={queue.id}
                   className="p-3 rounded-lg border border-border hover:border-primary/50 hover:bg-primary/5 transition-all cursor-pointer"
@@ -365,6 +444,50 @@ export function TransferConsultPanel() {
                   </div>
                 </div>
               ))}
+              {filteredQueues.length === 0 && (
+                <p className="text-xs text-muted-foreground text-center py-6">No queues found</p>
+              )}
+            </div>
+          </ScrollArea>
+        </TabsContent>
+
+        {/* Entry Points Tab */}
+        <TabsContent value="entrypoints" className="flex-1 overflow-hidden mt-0 flex flex-col">
+          <div className="p-3">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                placeholder="Search entry points..."
+                value={epSearch}
+                onChange={(e) => setEpSearch(e.target.value)}
+                className="pl-9"
+              />
+            </div>
+          </div>
+          <ScrollArea className="flex-1 px-3">
+            <div className="space-y-2 pb-3">
+              {filteredEntryPoints.map(ep => (
+                <div
+                  key={ep.id}
+                  className="p-3 rounded-lg border border-border hover:border-primary/50 hover:bg-primary/5 transition-all cursor-pointer"
+                  onClick={() => handleEntryPointAction(ep.id)}
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <DoorOpen className="w-4 h-4 text-muted-foreground" />
+                      <p className="font-medium">{ep.name}</p>
+                    </div>
+                    <Badge variant="outline" className="text-[10px] capitalize">
+                      entry point
+                    </Badge>
+                  </div>
+                </div>
+              ))}
+              {filteredEntryPoints.length === 0 && (
+                <p className="text-xs text-muted-foreground text-center py-6">
+                  No entry points available
+                </p>
+              )}
             </div>
           </ScrollArea>
         </TabsContent>
