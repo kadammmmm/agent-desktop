@@ -2070,6 +2070,39 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     ));
   }, [consultState, runningInDemoMode, addSDKLog]);
 
+  // Exit conference - agent leaves conference, customer stays with consulted party
+  const exitConference = useCallback(async (taskId: string) => {
+    const task = activeTasks.find(t => t.taskId === taskId);
+    if (!runningInDemoMode && desktopRef.current) {
+      try {
+        const ac: any = desktopRef.current.agentContact;
+        const method = ac.consultConferenceEnd || ac.conferenceEnd || ac.consultEnd;
+        if (!method) {
+          throw new Error('SDK does not expose a consultConferenceEnd method');
+        }
+        addSDKLog('info', 'Initiating consultConferenceEnd (exit conference)', { taskId, mediaResourceId: task?.mediaResourceId }, 'Conference');
+        await method.call(ac, {
+          interactionId: taskId,
+          isConsult: true,
+          taskId,
+          mediaResourceId: task?.mediaResourceId,
+        });
+        addSDKLog('info', 'consultConferenceEnd successful', { taskId }, 'Conference');
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        addSDKLog('error', 'consultConferenceEnd failed', { error: msg }, 'Conference');
+        toast({ title: 'Exit conference failed', description: msg, variant: 'destructive' });
+      }
+      return;
+    }
+    // Demo mode
+    setActiveTasks(prev => prev.filter(t => t.taskId !== taskId));
+    if (selectedTaskId === taskId) setSelectedTaskId(null);
+    setConsultState({ isConsulting: false });
+  }, [activeTasks, selectedTaskId, runningInDemoMode, addSDKLog]);
+
+
+
 
 
   // Outdial - Use Desktop.dialer.startOutdial per Cisco sample
