@@ -1843,6 +1843,118 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     return stateMap[sdkState?.toLowerCase()] || 'connected';
   };
 
+  // Build a Task object from an extracted contact (offer/assigned/taskMap).
+  const buildTaskFromContact = (contact: any, startTimeOverride?: number): Task => ({
+    taskId: contact.interactionId,
+    mediaType: mapMediaType(contact.mediaType),
+    mediaChannel: contact.mediaChannel || 'telephony',
+    state: mapContactState(contact.state || 'connected'),
+    direction: (contact.direction as 'inbound' | 'outbound') || 'inbound',
+    queueName: contact.queueName || 'Unknown Queue',
+    ani: contact.ani || '',
+    dnis: contact.dnis || '',
+    startTime: startTimeOverride ?? contact.createdTimestamp ?? Date.now(),
+    isRecording: !!contact.isRecording,
+    isMuted: false,
+    isHeld: false,
+    wrapUpRequired: true,
+    cadVariables: contact.cadVariables || {},
+    customerName: contact.customerName,
+    customerEmail: contact.customerEmail,
+    customerPhone: contact.customerPhone || contact.ani,
+    mediaResourceId: contact.mediaResourceId,
+    isConsult: false,
+    isPostCallConsult: false,
+  });
+
+  // Idempotently ensure an active task exists for `interactionId`. Tries
+  // Desktop.actions.getTaskMap() first (authoritative), then falls back to
+  // the offer payload stashed on the current incomingTask when the id matches.
+  // Safe to call repeatedly — will not create duplicates and will only clear
+  // the incomingTask card after the active task exists.
+  const hydrateActiveTaskFromInteractionId = useCallback(async (
+    interactionId: string | undefined,
+    reason: string,
+  ): Promise<boolean> => {
+    if (!interactionId) {
+      addSDKLog('debug', 'hydrateActiveTask: no interactionId supplied', { reason }, 'WebexContext');
+      return false;
+    }
+    if (activeTasksRef.current.some(t => t.taskId === interactionId)) {
+      addSDKLog('debug', 'hydrateActiveTask: task already active', { interactionId, reason }, 'WebexContext');
+      return true;
+    }
+
+    let contact: any = null;
+    let source: 'taskMap' | 'incomingOffer' | null = null;
+
+    // 1) TaskMap (authoritative)
+    try {
+      const taskMap = await desktopRef.current?.actions?.getTaskMap?.();
+      if (taskMap && typeof taskMap === 'object') {
+        const entry = (taskMap as any)[interactionId]
+          ?? Object.values(taskMap).find((t: any) => extractContactData(t)?.interactionId === interactionId);
+        if (entry) {
+          contact = extractContactData(entry);
+          source = 'taskMap';
+        }
+      }
+    } catch (e) {
+      addSDKLog('warn', 'hydrateActiveTask: getTaskMap failed', { reason, error: e instanceof Error ? e.message : String(e) }, 'WebexContext');
+    }
+
+    // 2) Fall back to the stashed offer payload
+    if (!contact) {
+      const incoming = incomingTaskRef.current;
+      if (incoming && incoming.taskId === interactionId && (incoming as any)._rawContact) {
+        contact = (incoming as any)._rawContact;
+        source = 'incomingOffer';
+      }
+    }
+
+    if (!contact) {
+      addSDKLog('warn', 'hydrateActiveTask: no source found for interactionId', { interactionId, reason }, 'WebexContext');
+      return false;
+    }
+
+    const incoming = incomingTaskRef.current;
+    const startTime = incoming && incoming.taskId === interactionId
+      ? incoming.startTime
+      : (contact.createdTimestamp || Date.now());
+
+    const newTask = buildTaskFromContact({ ...contact, interactionId }, startTime);
+    if (newTask.state === 'incoming') newTask.state = 'connected';
+
+    setActiveTasks(prev => {
+      if (prev.some(t => t.taskId === interactionId)) return prev;
+      return [...prev, newTask];
+    });
+    setSelectedTaskId(interactionId);
+    setCustomerProfile({
+      id: interactionId,
+      name: contact.customerName || contact.ani || 'Unknown Customer',
+      email: contact.customerEmail || '',
+      phone: contact.customerPhone || contact.ani || '',
+      company: contact.company || '',
+      isVerified: false,
+      tags: [] as CustomerTag[],
+      interactionHistory: [] as CallLogEntry[],
+      cadVariables: contact.cadVariables || {},
+    });
+    // Clear ringing card only after active task is in place
+    if (incoming && incoming.taskId === interactionId) {
+      setIncomingTask(null);
+    }
+
+    addSDKLog('info', 'hydrateActiveTask: materialized active task', {
+      interactionId, reason, source, startTime,
+      ani: contact.ani, customerName: contact.customerName,
+    }, 'WebexContext');
+    return true;
+  }, [addSDKLog]);
+
+
+
   // Set agent state
   const setAgentState = useCallback(async (state: AgentState, idleCodeId?: string) => {
     if (runningInDemoMode || !desktopRef.current) {
