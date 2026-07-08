@@ -294,6 +294,16 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   const desktopRef = useRef<any>(null);
   const idleCodesRef = useRef<IdleCode[]>([]);
   const lastStateChangePayloadRef = useRef<any>(null);
+  // Event de-duplication: SDK sometimes delivers the same contact event twice
+  // within milliseconds. Fingerprints kept for a short TTL to swallow the copy.
+  const handledEventsRef = useRef<Map<string, number>>(new Map());
+  // Guard against double-registration of agentContact listeners.
+  const listenersRegisteredRef = useRef(false);
+  // Live refs so async safety-nets and hydration paths can read latest state
+  // without stale closures.
+  const activeTasksRef = useRef<Task[]>([]);
+  const incomingTaskRef = useRef<IncomingTask | null>(null);
+  const agentStateRef = useRef<AgentStateInfo | null>(null);
 
   // SDK Logging helper
   const addSDKLog = useCallback((level: SDKLogLevel, message: string, data?: unknown, source?: string) => {
