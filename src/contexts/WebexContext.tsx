@@ -89,12 +89,15 @@ interface WebexContextType {
   transferToQueue: (taskId: string, queueId: string) => Promise<void>;
   transferToAgent: (taskId: string, agentId: string) => Promise<void>;
   transferToDN: (taskId: string, dialNumber: string) => Promise<void>;
+  transferToEntryPoint: (taskId: string, entryPointId: string) => Promise<void>;
   consultAgent: (taskId: string, agentId: string) => Promise<void>;
   consultQueue: (taskId: string, queueId: string) => Promise<void>;
   consultDN: (taskId: string, dialNumber: string) => Promise<void>;
+  consultEntryPoint: (taskId: string, entryPointId: string) => Promise<void>;
   completeTransfer: (taskId: string) => Promise<void>;
   cancelConsult: (taskId: string) => Promise<void>;
   conferenceCall: (taskId: string) => Promise<void>;
+  exitConference: (taskId: string) => Promise<void>;
   outdial: (dialNumber: string, entryPointId: string) => Promise<void>;
   startRecording: (taskId: string) => Promise<void>;
   stopRecording: (taskId: string) => Promise<void>;
@@ -235,7 +238,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   const [sdkLogs, setSdkLogs] = useState<SDKLogEntry[]>([]);
   const logIdCounter = useRef(0);
 
-  const ronaTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const ronaTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const desktopRef = useRef<any>(null);
 
   // SDK Logging helper
@@ -1791,6 +1794,34 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     setCustomerProfile(null);
   }, [activeTasks.length, selectedTaskId, runningInDemoMode, addSDKLog]);
 
+  // Blind transfer to Entry Point (uses vteamTransfer with inboundentrypoint)
+  const transferToEntryPoint = useCallback(async (taskId: string, entryPointId: string) => {
+    if (!runningInDemoMode && desktopRef.current) {
+      try {
+        addSDKLog('info', 'Initiating vteamTransfer to entryPoint', { taskId, entryPointId }, 'Transfer');
+        await desktopRef.current.agentContact.vteamTransfer({
+          interactionId: taskId,
+          data: {
+            vteamId: entryPointId,
+            vteamType: 'inboundentrypoint',
+            mediaType: 'telephony',
+          },
+        });
+        addSDKLog('info', 'vteamTransfer to entryPoint successful', { taskId, entryPointId }, 'Transfer');
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        addSDKLog('error', 'vteamTransfer to entryPoint failed', { error: msg }, 'Transfer');
+        toast({ title: 'Transfer failed', description: msg, variant: 'destructive' });
+      }
+      return;
+    }
+    // Demo mode
+    setActiveTasks(prev => prev.filter(t => t.taskId !== taskId));
+    if (selectedTaskId === taskId) setSelectedTaskId(null);
+    setConsultState({ isConsulting: false });
+    setCustomerProfile(null);
+  }, [selectedTaskId, runningInDemoMode, addSDKLog]);
+
   // Consult agent (warm transfer start)
   const consultAgent = useCallback(async (taskId: string, agentId: string) => {
     const agent = teamAgents.find(a => a.agentId === agentId) || buddyAgents.find(a => a.agentId === agentId);
@@ -1910,6 +1941,47 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     });
   }, [runningInDemoMode, addSDKLog]);
 
+  // Consult to Entry Point (warm transfer start)
+  const consultEntryPoint = useCallback(async (taskId: string, entryPointId: string) => {
+    const ep = entryPoints.find(e => e.id === entryPointId);
+    if (!runningInDemoMode && desktopRef.current) {
+      try {
+        addSDKLog('info', 'Initiating consult to entryPoint', { taskId, entryPointId }, 'Consult');
+        await desktopRef.current.agentContact.consult({
+          interactionId: taskId,
+          data: { to: entryPointId, destinationType: 'entryPoint' },
+        });
+        addSDKLog('info', 'consult to entryPoint request accepted', { taskId, entryPointId }, 'Consult');
+        setActiveTasks(prev => prev.map(t =>
+          t.taskId === taskId ? { ...t, state: 'consulting', isHeld: true } : t
+        ));
+        setConsultState({
+          isConsulting: true,
+          consultTarget: { type: 'entryPoint', id: entryPointId, name: ep?.name || entryPointId, destinationType: 'entryPoint' },
+          consultStartTime: Date.now(),
+          consultConnected: false,
+        });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        addSDKLog('error', 'consult to entryPoint failed', { error: msg }, 'Consult');
+        toast({ title: 'Consult failed', description: msg, variant: 'destructive' });
+      }
+      return;
+    }
+    // Demo mode
+    setActiveTasks(prev => prev.map(t =>
+      t.taskId === taskId ? { ...t, state: 'consulting', isHeld: true } : t
+    ));
+    setConsultState({
+      isConsulting: true,
+      consultTarget: { type: 'entryPoint', id: entryPointId, name: ep?.name || entryPointId, destinationType: 'entryPoint' },
+      consultStartTime: Date.now(),
+      consultConnected: true,
+    });
+  }, [entryPoints, runningInDemoMode, addSDKLog]);
+
+
+
   // Complete transfer (after consult)
   const completeTransfer = useCallback(async (taskId: string) => {
     if (!runningInDemoMode && desktopRef.current) {
@@ -1997,6 +2069,39 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       t.taskId === taskId ? { ...t, state: 'conferencing', isHeld: false } : t
     ));
   }, [consultState, runningInDemoMode, addSDKLog]);
+
+  // Exit conference - agent leaves conference, customer stays with consulted party
+  const exitConference = useCallback(async (taskId: string) => {
+    const task = activeTasks.find(t => t.taskId === taskId);
+    if (!runningInDemoMode && desktopRef.current) {
+      try {
+        const ac: any = desktopRef.current.agentContact;
+        const method = ac.consultConferenceEnd || ac.conferenceEnd || ac.consultEnd;
+        if (!method) {
+          throw new Error('SDK does not expose a consultConferenceEnd method');
+        }
+        addSDKLog('info', 'Initiating consultConferenceEnd (exit conference)', { taskId, mediaResourceId: task?.mediaResourceId }, 'Conference');
+        await method.call(ac, {
+          interactionId: taskId,
+          isConsult: true,
+          taskId,
+          mediaResourceId: task?.mediaResourceId,
+        });
+        addSDKLog('info', 'consultConferenceEnd successful', { taskId }, 'Conference');
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        addSDKLog('error', 'consultConferenceEnd failed', { error: msg }, 'Conference');
+        toast({ title: 'Exit conference failed', description: msg, variant: 'destructive' });
+      }
+      return;
+    }
+    // Demo mode
+    setActiveTasks(prev => prev.filter(t => t.taskId !== taskId));
+    if (selectedTaskId === taskId) setSelectedTaskId(null);
+    setConsultState({ isConsulting: false });
+  }, [activeTasks, selectedTaskId, runningInDemoMode, addSDKLog]);
+
+
 
 
 
@@ -2519,12 +2624,15 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     transferToQueue,
     transferToAgent,
     transferToDN,
+    transferToEntryPoint,
     consultAgent,
     consultQueue,
     consultDN,
+    consultEntryPoint,
     completeTransfer,
     cancelConsult,
     conferenceCall,
+    exitConference,
     outdial,
     startRecording,
     stopRecording,
