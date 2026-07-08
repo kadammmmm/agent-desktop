@@ -1444,6 +1444,14 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     
     addSDKLog('info', 'Setting incomingTask state with real data', incomingTaskData, 'WebexContext');
     setIncomingTask(incomingTaskData as any);
+
+    // Surface via Desktop notification bus so agents see it outside this widget
+    desktopNotify({
+      title: `Incoming ${incomingTaskData.mediaType} · ${incomingTaskData.queueName}`,
+      data: incomingTaskData.customerName || incomingTaskData.ani,
+      type: 'info',
+      autoDismissMs: (contact.ronaTimeout || 15) * 1000,
+    });
     
     // Clear any existing RONA timer
     if (ronaTimerRef.current) {
