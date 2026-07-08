@@ -24,6 +24,17 @@ import type { SDKLogEntry, SDKLogLevel } from '@/types/sdk-debug';
 import { getScenarioById } from '@/lib/demoScenarios';
 import { isDemoMode, getEnvironmentDiagnostics } from '@/lib/webexEnvironment';
 import { toast } from '@/hooks/use-toast';
+import { desktopNotify } from '@/hooks/useDesktopNotification';
+
+export interface ScreenPopEvent {
+  interactionId?: string;
+  url?: string;
+  type?: string;
+  autoOpen?: boolean;
+  data?: Record<string, unknown>;
+  raw?: unknown;
+}
+
 interface WebexContextType {
   // Connection state
   isInitialized: boolean;
