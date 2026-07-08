@@ -24,6 +24,17 @@ import type { SDKLogEntry, SDKLogLevel } from '@/types/sdk-debug';
 import { getScenarioById } from '@/lib/demoScenarios';
 import { isDemoMode, getEnvironmentDiagnostics } from '@/lib/webexEnvironment';
 import { toast } from '@/hooks/use-toast';
+import { desktopNotify } from '@/hooks/useDesktopNotification';
+
+export interface ScreenPopEvent {
+  interactionId?: string;
+  url?: string;
+  type?: string;
+  autoOpen?: boolean;
+  data?: Record<string, unknown>;
+  raw?: unknown;
+}
+
 interface WebexContextType {
   // Connection state
   isInitialized: boolean;
@@ -70,6 +81,10 @@ interface WebexContextType {
   sdkLogs: SDKLogEntry[];
   clearSDKLogs: () => void;
   exportSDKLogs: () => string;
+
+  // Screen pop (Desktop.screenpop -> eScreenPop)
+  screenPop: ScreenPopEvent | null;
+  dismissScreenPop: () => void;
   
   // Demo settings reference
   demoAutoIncomingEnabled: boolean;
@@ -84,6 +99,7 @@ interface WebexContextType {
   resumeTask: (taskId: string) => Promise<void>;
   muteTask: (taskId: string) => Promise<void>;
   unmuteTask: (taskId: string) => Promise<void>;
+  sendDtmf: (taskId: string, digit: string) => Promise<void>;
   endTask: (taskId: string) => Promise<void>;
   wrapUpTask: (taskId: string, wrapUpCodeId: string) => Promise<void>;
   transferToQueue: (taskId: string, queueId: string) => Promise<void>;
@@ -233,6 +249,10 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   
   // Demo control state
   const [demoAutoIncomingEnabled, setDemoAutoIncomingEnabled] = useState(true);
+
+  // Screen pop
+  const [screenPop, setScreenPop] = useState<ScreenPopEvent | null>(null);
+  const dismissScreenPop = useCallback(() => setScreenPop(null), []);
 
   // SDK Debug Logs state
   const [sdkLogs, setSdkLogs] = useState<SDKLogEntry[]>([]);
@@ -876,7 +896,40 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
               );
               console.warn('[WebexCC] Failed to fetch entry points, using fallback:', epError);
             }
-            
+
+            // Fetch address book entries (populates transfer/consult DN picker)
+            try {
+              if (typeof desktopRef.current.agentStateInfo?.fetchAddressBooks === 'function') {
+                const abResp = await desktopRef.current.agentStateInfo.fetchAddressBooks();
+                const rawEntries: any[] = Array.isArray(abResp)
+                  ? abResp
+                  : Array.isArray(abResp?.data)
+                    ? abResp.data
+                    : Array.isArray(abResp?.entries)
+                      ? abResp.entries
+                      : [];
+                // Address books can be nested (book -> entries); flatten one level
+                const flattened = rawEntries.flatMap((item: any) =>
+                  Array.isArray(item?.entries) ? item.entries : [item]
+                );
+                const book = flattened
+                  .map((e: any) => ({
+                    id: e.id || e.entryId || e.number || `${e.name}-${e.number}`,
+                    name: e.name || e.displayName || e.number || 'Unknown',
+                    number: e.number || e.phoneNumber || e.dn || '',
+                  }))
+                  .filter((e) => e.number);
+                if (book.length > 0) {
+                  setAddressBook(book);
+                  addSDKLog('info', `Loaded ${book.length} address book entries`, null, 'WebexContext');
+                } else {
+                  addSDKLog('warn', 'Address book response was empty', { abResp }, 'WebexContext');
+                }
+              }
+            } catch (abErr) {
+              addSDKLog('warn', 'Could not fetch address books', { error: abErr instanceof Error ? abErr.message : String(abErr) }, 'WebexContext');
+            }
+
             console.log('[WebexCC] Agent info loaded:', agentInfo.agentName, 'State:', mappedState);
           } else {
             addSDKLog('warn', 'Agent data not ready after waiting', null, 'WebexContext');
@@ -1099,6 +1152,94 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
             ));
           });
           addSDKLog('info', 'Registered: eCallRecordingStarted listener', null, 'WebexContext');
+
+          // ---- Additional agentContact events for error recovery & rich UI ----
+          const registerSafe = (evt: string, handler: (e: any) => void) => {
+            try {
+              desktopRef.current.agentContact.addEventListener(evt, handler);
+              addSDKLog('info', `Registered: ${evt} listener`, null, 'WebexContext');
+            } catch (err) {
+              addSDKLog('warn', `Could not register ${evt}`, { error: err instanceof Error ? err.message : String(err) }, 'WebexContext');
+            }
+          };
+
+          registerSafe('eAgentConsultEndFailed', (event: any) => {
+            addSDKLog('error', '>>> eAgentConsultEndFailed <<<', event, 'Consult');
+            setConsultState({ isConsulting: false });
+            toast({ title: 'Consult end failed', description: 'Could not end the consult session.', variant: 'destructive' });
+          });
+          registerSafe('eAgentCtqCancelled', (event: any) => {
+            addSDKLog('info', '>>> eAgentCtqCancelled <<<', event, 'Consult');
+            setConsultState({ isConsulting: false });
+          });
+          registerSafe('eAgentCtqFailed', (event: any) => {
+            addSDKLog('error', '>>> eAgentCtqFailed <<<', event, 'Consult');
+            toast({ title: 'Consult-to-queue failed', description: 'Please try a different target.', variant: 'destructive' });
+          });
+          registerSafe('eAgentCtqCancelFailed', (event: any) => {
+            addSDKLog('error', '>>> eAgentCtqCancelFailed <<<', event, 'Consult');
+          });
+          registerSafe('eAgentConsultTransferring', (event: any) => {
+            addSDKLog('info', '>>> eAgentConsultTransferring <<<', event, 'Consult');
+          });
+          registerSafe('eAgentContactAniUpdated', (event: any) => {
+            addSDKLog('info', '>>> eAgentContactAniUpdated <<<', event, 'WebexContext');
+            const c = extractContactData(event);
+            if (c.interactionId && c.ani) {
+              setActiveTasks(prev => prev.map(t =>
+                t.taskId === c.interactionId ? { ...t, ani: c.ani, customerPhone: c.customerPhone || c.ani } : t
+              ));
+            }
+          });
+          registerSafe('eContactOwnerChanged', (event: any) => {
+            addSDKLog('info', '>>> eContactOwnerChanged <<<', event, 'WebexContext');
+          });
+          registerSafe('eParticipantJoinedConference', (event: any) => {
+            addSDKLog('info', '>>> eParticipantJoinedConference <<<', event, 'Conference');
+          });
+          registerSafe('eParticipantLeftConference', (event: any) => {
+            addSDKLog('info', '>>> eParticipantLeftConference <<<', event, 'Conference');
+          });
+          registerSafe('eAgentConsultConferenceEnded', (event: any) => {
+            addSDKLog('info', '>>> eAgentConsultConferenceEnded <<<', event, 'Conference');
+            const c = extractContactData(event);
+            if (c.interactionId) {
+              setActiveTasks(prev => prev.map(t =>
+                t.taskId === c.interactionId ? { ...t, state: 'connected' } : t
+              ));
+            }
+          });
+
+          // ---- Screen pop (Desktop.screenpop -> eScreenPop) ----
+          try {
+            if (desktopRef.current.screenpop?.addEventListener) {
+              desktopRef.current.screenpop.addEventListener('eScreenPop', (event: any) => {
+                addSDKLog('info', '>>> eScreenPop EVENT FIRED <<<', event, 'ScreenPop');
+                const payload = event?.data ?? event ?? {};
+                const url: string | undefined =
+                  payload.screenPopUrl || payload.url || payload.data?.url;
+                const interactionId: string | undefined =
+                  payload.interactionId || payload.data?.interactionId;
+                const data: Record<string, unknown> | undefined =
+                  payload.screenPopData || payload.data?.screenPopData ||
+                  (typeof payload.data === 'object' && !url ? payload.data : undefined);
+                setScreenPop({
+                  interactionId,
+                  url,
+                  type: payload.type || payload.screenPopType,
+                  autoOpen: payload.autoOpen !== false,
+                  data,
+                  raw: event,
+                });
+              });
+              addSDKLog('info', 'Registered: eScreenPop listener', null, 'WebexContext');
+            } else {
+              addSDKLog('warn', 'screenpop module not available', null, 'WebexContext');
+            }
+          } catch (e) {
+            addSDKLog('warn', 'Could not register eScreenPop listener', { error: e instanceof Error ? e.message : String(e) }, 'WebexContext');
+          }
+
           
           // Listen for outdial failures
           try {
@@ -1303,6 +1444,14 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     
     addSDKLog('info', 'Setting incomingTask state with real data', incomingTaskData, 'WebexContext');
     setIncomingTask(incomingTaskData as any);
+
+    // Surface via Desktop notification bus so agents see it outside this widget
+    desktopNotify({
+      title: `Incoming ${incomingTaskData.mediaType} · ${incomingTaskData.queueName}`,
+      data: incomingTaskData.customerName || incomingTaskData.ani,
+      type: 'info',
+      autoDismissMs: (contact.ronaTimeout || 15) * 1000,
+    });
     
     // Clear any existing RONA timer
     if (ronaTimerRef.current) {
@@ -1830,6 +1979,19 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     ));
     console.log('[WebexCC] Task unmuted:', taskId);
   }, [runningInDemoMode]);
+
+  // Send DTMF tone via SDK (Desktop.agentContact.sendDtmf)
+  const sendDtmf = useCallback(async (taskId: string, digit: string) => {
+    addSDKLog('debug', 'sendDtmf', { taskId, digit }, 'DTMF');
+    try {
+      if (!runningInDemoMode && desktopRef.current?.agentContact?.sendDtmf) {
+        desktopRef.current.agentContact.sendDtmf(digit);
+      }
+    } catch (error) {
+      addSDKLog('error', 'sendDtmf failed', { error: error instanceof Error ? error.message : String(error), digit }, 'DTMF');
+      console.error('[WebexCC] sendDtmf failed:', error);
+    }
+  }, [runningInDemoMode, addSDKLog]);
 
   // End task
   const endTask = useCallback(async (taskId: string) => {
@@ -2798,6 +2960,8 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     sdkLogs,
     clearSDKLogs,
     exportSDKLogs,
+    screenPop,
+    dismissScreenPop,
     demoAutoIncomingEnabled,
     setDemoAutoIncomingEnabled,
     initialize,
@@ -2808,6 +2972,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     resumeTask,
     muteTask,
     unmuteTask,
+    sendDtmf,
     endTask,
     wrapUpTask,
     transferToQueue,

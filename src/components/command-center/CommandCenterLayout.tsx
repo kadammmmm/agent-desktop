@@ -13,6 +13,7 @@ import { TransferConsultPanel } from './panels/TransferConsultPanel';
 import { AgentMetricsDashboard } from './panels/AgentMetricsDashboard';
 import { SettingsPanel } from './panels/SettingsPanel';
 import { SDKDebugPanel } from './SDKDebugPanel';
+import { ScreenPopPanel } from './ScreenPopPanel';
 import { useWebex } from '@/contexts/WebexContext';
 import type { NavigationSection } from '@/types/webex';
 import { ChevronRight, ChevronLeft, PanelRightOpen, PanelRightClose, Bug } from 'lucide-react';
@@ -222,6 +223,9 @@ export function CommandCenterLayout() {
       
       {/* Demo Control Panel - floating */}
       <DemoControlPanel />
+
+      {/* Screen Pop banner (Desktop.screenpop -> eScreenPop) */}
+      <ScreenPopPanel />
 
       {/* SDK Debug Panel */}
       {showDebugPanel && (

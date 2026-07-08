@@ -1,69 +1,65 @@
-## Plan: repair Agent State synchronization with Webex CC
+# SDK Integration Gap Analysis & Roadmap
 
-### Problem to fix
-The widget is registered with the Webex Desktop SDK, but agent state is not round-tripping correctly:
-- Native Webex Desktop state changes are not reflected in the widget.
-- Widget state changes are still failing with `Service.aqm.agent.stateChange` / `reasonCode: 33`.
+The widget uses `@wxcc-desktop/sdk` (correct choice for an embedded Agent Desktop widget). The separate `@webex/contact-center` JS SDK is only relevant for a standalone, non-Cisco-shell desktop — **not additive here**, so we should stay on `@wxcc-desktop/sdk`.
 
-### Root cause found
-The current implementation moved toward `stateChangeV2`, but the installed SDK typings show the method signature is:
+Core call lifecycle (state, accept/decline/hold/mute/end/wrapup, all consult flavors, transfer, conference, recording pause/resume, outdial, buddy agents, CAD updates, log upload) is solid. Fifteen capability gaps identified, grouped into three phases.
 
-```ts
-Desktop.agentStateInfo.stateChangeV2({
-  data: {
-    channelType: string[],
-    state: string,
-    auxCodeId?: string,
-    reason?: string,
-    agentId?: string
-  }
-})
-```
+## Phase 1 — Quick wins & correctness (S, blocking / near-blocking)
 
-The current code calls:
+1. **Remote audio wiring** — `useRemoteAudio` hook exists but is never fed. Subscribe to the SDK media event on task assignment and call `attachStream(stream)`. Without this, voice calls have no audio in the widget.  
+   *Files:* `WebexContext.tsx` (task-assignment listener), `useRemoteAudio.ts` (already ready).  
+   *Note:* Exact event name (`eAgentContactMedia` vs. nested WebRTC payload) needs a live SDK inspection — will add a defensive multi-path listener.
 
-```ts
-stateChangeV2({ channelType, state, auxCodeId })
-```
+2. **Screen pop** — Register `Desktop.screenpop.addEventListener("eScreenPop", …)` and surface the pop (URL/CRM record) in a new lightweight `ScreenPopPanel` or auto-open per config.  
+   *Files:* new `hooks/useScreenPop.ts`, new `components/command-center/ScreenPopPanel.tsx`, `WebexContext.tsx`.
 
-That skips the required `data` envelope. The code also only listens to the cumulative `updated` event, while SDK v2 emits channel-specific state events such as `eAgentChannelStateChanged` and relogin state maps via `eAgentChannelReloginSuccess`.
+3. **Desktop notification bus** — Replace/augment `toast()` for incoming-contact and error alerts with `Desktop.actions.fireGeneralAutoDismissNotification` / `fireGeneralSilentNotification` so alerts surface outside the widget iframe.  
+   *Files:* new `hooks/useDesktopNotification.ts`, `WebexContext.tsx` (incoming/error paths).
 
-### Implementation steps
-1. **Fix outbound state-change calls**
-   - Update `setAgentState` to call `stateChangeV2({ data: payload })`.
-   - Keep `Available` payload free of `auxCodeId`.
-   - Keep `Idle` payload using the selected valid idle-code UUID.
-   - Preserve legacy `stateChange({ state, auxCodeIdArray })` only as a fallback when `stateChangeV2` is unavailable.
+4. **DTMF keypad** — Wrap `Desktop.agentContact.sendDtmf(digit)` and expose a keypad in the active voice interaction view.  
+   *Files:* `WebexContext.tsx` (add `sendDtmf` action), new `DtmfKeypad` component, `VoiceInteractionView.tsx`.
 
-2. **Add robust channel-state parsing**
-   - Add helpers to read v2 channel state from:
-     - `latestData.agentChannelStateDetailMap`
-     - `latestData.channelsStatesMap`
-     - `eAgentChannelStateChanged.data.agentChannelStateDetail`
-     - `eAgentChannelReloginSuccess.data.agentChannelStateDetailMap`
-   - Prefer `telephony` when present, otherwise use the first valid provisioned channel.
-   - Normalize v2 `agentState` into the app’s `AgentState` type.
-   - Extract idle code and timestamp from v2 channel-state details when present.
+5. **Address book population** — Call `Desktop.agentStateInfo.fetchAddressBooks(...)` during initialization so the existing empty `addressBook` state actually populates (used by transfer/consult panels).  
+   *Files:* `WebexContext.tsx` init block.
 
-3. **Fix inbound sync from Webex Desktop**
-   - Update the existing `updated` listener to prefer v2 channel-state maps over legacy `status/subStatus`.
-   - Add listeners for:
-     - `eAgentChannelStateChanged`
-     - `eAgentChannelReloginSuccess`
-   - These listeners will update `agentState` immediately when the native Webex Desktop changes state.
+6. **Missing agentContact events** — Register listeners for `eAgentConsultEndFailed`, `eAgentCtqCancelled`, `eAgentCtqFailed`, `eAgentCtqCancelFailed`, `eContactOwnerChanged`, `eParticipantJoinedConference`, `eParticipantLeftConference`, `eAgentConsultTransferring`, `eAgentContactAniUpdated` so failures/transitions no longer leave the UI stuck.  
+   *Files:* `WebexContext.tsx`.
 
-4. **Improve channelType selection for outgoing requests**
-   - Derive channel types from SDK data when available (`channelsMap`, state detail maps, connected channels), falling back to `['telephony']`.
-   - Log the exact wrapped v2 request payload so the SDK Debug Panel shows what was sent.
+## Phase 2 — Feature completeness (M)
 
-5. **Improve failure diagnostics without fake state**
-   - On `AgentStateChangeFailed`, keep local state unchanged.
-   - Log the failed SDK payload, reason, reasonCode, trackingId, and current SDK channel-state snapshot.
-   - Do not use production mock timers or local-only state mutation.
+7. **Paginated aux codes** — Replace `latestData`-only idle/wrap-up code loading with `Desktop.agentConfigJsApi.fetchPaginatedAuxCodes(...)` + search UI. Needed for tenants with many codes.
 
-### Validation
-After implementation, verify with code-level checks and expected live behavior:
-- Changing state in native Webex Desktop updates the widget via v2 channel events.
-- Changing state in the widget sends `stateChangeV2({ data: ... })` and updates after SDK confirmation.
-- Idle sends a valid UUID `auxCodeId`; Available sends no `auxCodeId`.
-- Debug logs show channel-state events and wrapped v2 payloads.
+8. **V2 agentContact methods** — Migrate `accept/end/wrapup/consult/consultEnd/consultConference/vteamTransfer/blindTransfer/consultTransfer/buddyAgents/pauseRecording/resumeRecording/cancelTask` to their `*V2` counterparts and add `dropConferenceParticipant` + `exitConference` for granular conference control.
+
+9. **Shortcut keys** — `Desktop.shortcutKey.register(...)` + `listenKeyPress` for accept/decline/hold/mute/end. Include conflict listener for multi-widget setups.  
+   *Files:* new `hooks/useShortcutKeys.ts`, `WebexContext.tsx`.
+
+10. **Campaign / preview outdial** — Add `previewCampaignAccept/Skip`, `removePreviewContact`, and listen for `eAgentOfferCampaignReserved`, `eAgentAddCampaignReserved`, `eCampaignPreviewAcceptFailed`, `eCampaignPreviewSkipFailed`. New `CampaignContactPanel`.
+
+## Phase 3 — Advanced modules (L)
+
+11. **Supervisor / silent monitor** — Wire `Desktop.monitoring` (start/end/hold/bargeIn + `eMonitoring*` and `eAgentMonitorStateChanged` events) behind a supervisor-only `SupervisorPanel`. Also lets regular agents know when they're monitored (compliance).
+
+12. **AI Assistant / Copilot** — Listen to `Desktop.aiAssistant` / `Desktop.dataNotifsAiAssistant` (`eSuggestedResponseAvailable`, `eMidCallSummaryResponseSubsequentAgent`, `eWellnessBreakEvent`). New `AIAssistantPanel`. Config init already attempts to load the module.
+
+13. **Post-interaction recording playback** — `Desktop.postInteraction.fetchTasks` + `fetchCapture` behind a QA/supervisor `RecordingPlaybackModal`.
+
+14. **SDK i18n** — Adopt `Desktop.i18n.createInstance` + locale-change subscription; migrate string literals to translation files. Enables multi-region deployments.
+
+15. **Behavioral metrics** — Optional `Desktop.webexMetricsInternal.trackBehavioralEvent` at key interaction points.
+
+## Cleanup (bundled with Phase 1)
+
+- Delete or actually use `hooks/useSDKLogger.ts` (currently reimplemented inline in `WebexContext.tsx`).
+
+## Technical notes
+
+- Some payload schemas (screen pop event, V2 args, `eAgentContactMedia`) are not in the public npm README. We'll pull them from `node_modules/@wxcc-desktop/sdk/dist/*.d.ts` at implementation time and add typed wrappers.
+- All new SDK subscriptions must be added inside the existing production init guard (skip in demo mode) and cleaned up on unmount to prevent leaks.
+- No backend changes required — everything is client-side SDK wiring.
+
+## Recommendation
+
+Start with **Phase 1** (all Small effort, includes the audio blocker) as a single follow-up change, then decide Phase 2 / Phase 3 scope based on which capabilities your deployment needs (supervisor tooling, campaigns, AI Assistant).
+
+Which phase(s) should I implement? I'd suggest Phase 1 first as a self-contained batch.
