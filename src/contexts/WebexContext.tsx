@@ -240,6 +240,8 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
 
   const ronaTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const desktopRef = useRef<any>(null);
+  const idleCodesRef = useRef<IdleCode[]>([]);
+  const lastStateChangePayloadRef = useRef<any>(null);
 
   // SDK Logging helper
   const addSDKLog = useCallback((level: SDKLogLevel, message: string, data?: unknown, source?: string) => {
@@ -282,6 +284,344 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       })),
     }, null, 2);
   }, [sdkLogs]);
+
+  useEffect(() => {
+    idleCodesRef.current = idleCodes;
+  }, [idleCodes]);
+
+  // Check if a state indicates the agent is actively handling a contact.
+  const isEngagedLikeState = useCallback((state: string): boolean => {
+    const normalized = state?.toLowerCase() || '';
+    const engagedLikeStates = [
+      'engaged',
+      'engagedother',
+      'engaged_other',
+      'connected',
+      'talking',
+      'oncall',
+      'on call',
+      'on_call',
+      'busy',
+      'reserved',
+      'handling',
+      'ringing',
+      'consulting',
+      'consult',
+    ];
+    return engagedLikeStates.includes(normalized);
+  }, []);
+
+  // Map SDK state strings to our AgentState type.
+  const mapSdkStateToAgentState = useCallback((sdkState: string): AgentState => {
+    const normalized = sdkState?.toLowerCase() || '';
+    
+    if (isEngagedLikeState(normalized)) {
+      return 'Engaged';
+    }
+    
+    const stateMap: Record<string, AgentState> = {
+      'available': 'Available',
+      'idle': 'Idle',
+      'rona': 'RONA',
+      'wrapup': 'WrapUp',
+      'wrap-up': 'WrapUp',
+      'wrap_up': 'WrapUp',
+      'aftercallwork': 'WrapUp',
+      'after_call_work': 'WrapUp',
+      'acw': 'WrapUp',
+      'offline': 'Offline',
+      'loggedin': 'Idle',
+      'logged_in': 'Idle',
+      'loggedout': 'Offline',
+      'logged_out': 'Offline',
+      'notready': 'Idle',
+      'not_ready': 'Idle',
+    };
+    return stateMap[normalized] || 'Idle';
+  }, [isEngagedLikeState]);
+
+  // Helper to validate if a string is a valid UUID format.
+  const isValidUUID = useCallback((str: string): boolean => {
+    if (!str || typeof str !== 'string') return false;
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    return uuidRegex.test(str);
+  }, []);
+
+  const normalizeSdkChannelType = useCallback((channel?: string | null): string | null => {
+    if (!channel || typeof channel !== 'string') return null;
+    const normalized = channel.trim().toLowerCase();
+    const channelMap: Record<string, string> = {
+      voice: 'telephony',
+      phone: 'telephony',
+      telephony: 'telephony',
+      chat: 'chat',
+      social: 'social',
+      email: 'email',
+      workitem: 'workItem',
+      work_item: 'workItem',
+      workitemchannel: 'workItem',
+      custommessaging: 'customMessaging',
+      custom_messaging: 'customMessaging',
+    };
+    return channelMap[normalized] || null;
+  }, []);
+
+  const getChannelStateMap = useCallback((source: any): Record<string, any> | null => {
+    const data = source?.data ?? source;
+    const maps = [
+      data?.agentChannelStateDetailMap,
+      data?.channelsStatesMap,
+      source?.agentChannelStateDetailMap,
+      source?.channelsStatesMap,
+    ];
+
+    for (const map of maps) {
+      if (map && typeof map === 'object' && !Array.isArray(map) && Object.keys(map).length > 0) {
+        return map;
+      }
+    }
+    return null;
+  }, []);
+
+  const getPreferredChannelStateDetail = useCallback((source: any): { channelType: string; detail: any } | null => {
+    const data = source?.data ?? source;
+    const directDetail = data?.agentChannelStateDetail || source?.agentChannelStateDetail;
+    const directChannel = normalizeSdkChannelType(data?.channelType || source?.channelType);
+
+    if (directDetail && typeof directDetail === 'object') {
+      return {
+        channelType: directChannel || 'telephony',
+        detail: directDetail,
+      };
+    }
+
+    const stateMap = getChannelStateMap(source);
+    if (!stateMap) return null;
+
+    const entries = Object.entries(stateMap)
+      .map(([channel, detail]) => ({ channelType: normalizeSdkChannelType(channel), detail }))
+      .filter((entry): entry is { channelType: string; detail: any } => !!entry.channelType && !!entry.detail);
+
+    return entries.find(entry => entry.channelType === 'telephony')
+      || entries.find(entry => typeof entry.detail?.agentState === 'string')
+      || entries[0]
+      || null;
+  }, [getChannelStateMap, normalizeSdkChannelType]);
+
+  const getIdleCodeFromSdkData = useCallback((sdkData: any, detail?: any): AgentStateInfo['idleCode'] | undefined => {
+    const data = sdkData?.data ?? sdkData;
+    const auxCodeId = detail?.auxCodeId || data?.auxCodeId || sdkData?.auxCodeId;
+    const auxCodeName = detail?.idleCodeName || data?.auxCodeName || sdkData?.auxCodeName;
+    const explicitIdleCode = data?.idleCode || sdkData?.idleCode;
+
+    if (explicitIdleCode?.id) {
+      return {
+        id: explicitIdleCode.id,
+        name: explicitIdleCode.name || auxCodeName || '',
+      };
+    }
+
+    if (!auxCodeId) return undefined;
+    const matchedCode = idleCodesRef.current.find(code => code.id === auxCodeId);
+    return {
+      id: auxCodeId,
+      name: auxCodeName || matchedCode?.name || '',
+    };
+  }, []);
+
+  const buildAgentStateSnapshot = useCallback((sdkData: any, source: string): (AgentStateInfo & { rawState: string; channelType?: string; source: string }) | null => {
+    if (!sdkData) return null;
+
+    const data = sdkData?.data ?? sdkData;
+    const channelState = getPreferredChannelStateDetail(sdkData);
+
+    if (channelState?.detail) {
+      const rawState = channelState.detail.agentState
+        || channelState.detail.agentStateToDisplay
+        || channelState.detail.localizedAgentState
+        || data?.subStatus
+        || data?.status
+        || 'Idle';
+
+      return {
+        state: mapSdkStateToAgentState(rawState),
+        idleCode: getIdleCodeFromSdkData(sdkData, channelState.detail),
+        lastStateChangeTime: channelState.detail.stateChangeTimestamp
+          || channelState.detail.lastIdleCodeChangeTimestamp
+          || data?.lastStateChangeTimestamp
+          || data?.eventTime
+          || Date.now(),
+        rawState,
+        channelType: channelState.channelType,
+        source,
+      };
+    }
+
+    const rawState = data?.subStatus || data?.status || sdkData?.subStatus || sdkData?.status;
+    if (!rawState) return null;
+
+    return {
+      state: mapSdkStateToAgentState(rawState),
+      idleCode: getIdleCodeFromSdkData(sdkData),
+      lastStateChangeTime: data?.lastStateChangeTimestamp || data?.eventTime || Date.now(),
+      rawState,
+      source,
+    };
+  }, [getIdleCodeFromSdkData, getPreferredChannelStateDetail, mapSdkStateToAgentState]);
+
+  const getProvisionedChannelTypes = useCallback((sdkData?: any): string[] => {
+    const data = sdkData?.data ?? sdkData ?? desktopRef.current?.agentStateInfo?.latestData;
+    const channelCandidates: string[] = [];
+
+    const pushChannel = (channel: unknown) => {
+      if (typeof channel !== 'string') return;
+      const normalized = normalizeSdkChannelType(channel);
+      if (normalized && !channelCandidates.includes(normalized)) {
+        channelCandidates.push(normalized);
+      }
+    };
+
+    const channelStateMap = getChannelStateMap(data);
+    if (channelStateMap) Object.keys(channelStateMap).forEach(pushChannel);
+
+    if (data?.channelsMap && typeof data.channelsMap === 'object') {
+      Object.keys(data.channelsMap).forEach(pushChannel);
+      Object.values(data.channelsMap).flat().forEach(pushChannel);
+    }
+
+    if (Array.isArray(data?.channelTypes)) data.channelTypes.forEach(pushChannel);
+    if (Array.isArray(data?.connectedChannels)) data.connectedChannels.forEach(pushChannel);
+    if (Array.isArray(data?.reservedAgentChannelIds)) data.reservedAgentChannelIds.forEach(pushChannel);
+
+    if (channelCandidates.includes('telephony')) {
+      return ['telephony', ...channelCandidates.filter(channel => channel !== 'telephony')];
+    }
+
+    return channelCandidates.length > 0 ? channelCandidates : ['telephony'];
+  }, [getChannelStateMap, normalizeSdkChannelType]);
+
+  // Helper to check if agent info is fully ready (not just truthy but with key fields).
+  const isAgentInfoReady = useCallback((agentInfo: any): boolean => {
+    if (!agentInfo) return false;
+    const hasIdentity = !!(agentInfo.agentName || agentInfo.agentId || agentInfo.agentProfileID);
+    const hasState = !!(agentInfo.status || agentInfo.subStatus || getPreferredChannelStateDetail(agentInfo));
+    return hasIdentity && hasState;
+  }, [getPreferredChannelStateDetail]);
+
+  const promoteIncomingTaskIfEngaged = useCallback(() => {
+    setIncomingTask(currentIncoming => {
+      if (!currentIncoming) return currentIncoming;
+
+      addSDKLog('info', '>>> PROMOTION: Agent Engaged with incomingTask - promoting to activeTasks <<<', {
+        taskId: currentIncoming.taskId,
+        ani: currentIncoming.ani,
+        customerName: currentIncoming.customerName,
+      }, 'WebexContext');
+      
+      if (ronaTimerRef.current) {
+        clearTimeout(ronaTimerRef.current);
+        ronaTimerRef.current = null;
+      }
+      
+      const rawContact = (currentIncoming as any)._rawContact;
+      const promotedTask: Task = {
+        taskId: currentIncoming.taskId,
+        mediaType: currentIncoming.mediaType,
+        mediaChannel: rawContact?.mediaChannel || (currentIncoming.mediaType === 'voice' ? 'telephony' : currentIncoming.mediaType),
+        state: 'connected',
+        direction: rawContact?.direction as 'inbound' | 'outbound' || 'inbound',
+        queueName: currentIncoming.queueName,
+        ani: currentIncoming.ani,
+        dnis: rawContact?.dnis || '',
+        startTime: currentIncoming.startTime,
+        isRecording: rawContact?.isRecording || false,
+        isMuted: false,
+        isHeld: false,
+        wrapUpRequired: true,
+        cadVariables: rawContact?.cadVariables || {},
+        customerName: currentIncoming.customerName,
+        customerEmail: rawContact?.customerEmail,
+        customerPhone: rawContact?.customerPhone || currentIncoming.ani,
+        mediaResourceId: rawContact?.mediaResourceId,
+        isConsult: false,
+        isPostCallConsult: false,
+      };
+      
+      setActiveTasks(prev => {
+        if (prev.some(t => t.taskId === promotedTask.taskId)) {
+          addSDKLog('info', 'Task already in activeTasks, skipping promotion', { taskId: promotedTask.taskId }, 'WebexContext');
+          return prev;
+        }
+        addSDKLog('info', 'Adding promoted task to activeTasks', { taskId: promotedTask.taskId }, 'WebexContext');
+        return [...prev, promotedTask];
+      });
+      setSelectedTaskId(promotedTask.taskId);
+      setCustomerProfile({
+        id: promotedTask.taskId,
+        name: promotedTask.customerName || promotedTask.ani || 'Unknown Customer',
+        email: promotedTask.customerEmail || '',
+        phone: promotedTask.customerPhone || promotedTask.ani || '',
+        company: rawContact?.company || '',
+        isVerified: false,
+        tags: [] as CustomerTag[],
+        interactionHistory: [] as CallLogEntry[],
+        cadVariables: promotedTask.cadVariables || {},
+      });
+      
+      return null;
+    });
+
+    (async () => {
+      try {
+        addSDKLog('info', 'Agent Engaged - attempting getTaskMap sync...', null, 'WebexContext');
+        const actionsAvailable = desktopRef.current?.actions;
+        addSDKLog('debug', 'Desktop.actions availability', {
+          hasActions: !!actionsAvailable,
+          actionKeys: actionsAvailable ? Object.keys(actionsAvailable) : [],
+          getTaskMapType: typeof actionsAvailable?.getTaskMap,
+        }, 'WebexContext');
+        
+        if (actionsAvailable?.getTaskMap) {
+          const taskMap = await actionsAvailable.getTaskMap();
+          addSDKLog('info', 'getTaskMap on Engaged result', {
+            taskMapType: typeof taskMap,
+            taskMapKeys: taskMap ? Object.keys(taskMap) : [],
+            taskMap,
+          }, 'WebexContext');
+        }
+      } catch (e) {
+        addSDKLog('warn', 'getTaskMap on Engaged failed', e, 'WebexContext');
+      }
+    })();
+  }, [addSDKLog]);
+
+  const syncAgentStateFromSdkData = useCallback((sdkData: any, source: string) => {
+    const snapshot = buildAgentStateSnapshot(sdkData, source);
+    if (!snapshot) {
+      addSDKLog('warn', 'Unable to derive agent state from SDK data', { source, sdkData }, 'WebexContext');
+      return null;
+    }
+
+    setAgentStateInfo({
+      state: snapshot.state,
+      idleCode: snapshot.idleCode,
+      lastStateChangeTime: snapshot.lastStateChangeTime,
+    });
+
+    addSDKLog('info', `Agent state synchronized to: ${snapshot.state}`, {
+      source,
+      rawState: snapshot.rawState,
+      channelType: snapshot.channelType,
+      idleCode: snapshot.idleCode,
+      lastStateChangeTime: snapshot.lastStateChangeTime,
+    }, 'WebexContext');
+
+    if (snapshot.state === 'Engaged') {
+      promoteIncomingTaskIfEngaged();
+    }
+
+    return snapshot;
+  }, [addSDKLog, buildAgentStateSnapshot, promoteIncomingTaskIfEngaged]);
 
   // Initialize SDK and auto-fetch agent session
   const initialize = useCallback(async () => {
