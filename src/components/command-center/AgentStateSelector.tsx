@@ -167,7 +167,18 @@ export function AgentStateSelector({ collapsed }: AgentStateSelectorProps) {
             Idle
             {isLoadingIdleCodes && <Loader2 className="w-3 h-3 animate-spin ml-auto" />}
           </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent>
+          <DropdownMenuSubContent className="w-64">
+            <div className="p-1">
+              <input
+                type="text"
+                value={idleSearch}
+                onChange={(e) => setIdleSearch(e.target.value)}
+                placeholder="Search idle codes..."
+                autoFocus
+                className="w-full text-xs px-2 py-1.5 rounded border border-border bg-background outline-none focus:ring-1 focus:ring-ring"
+                onKeyDown={(e) => e.stopPropagation()}
+              />
+            </div>
             {isLoadingIdleCodes ? (
               <DropdownMenuItem disabled className="text-muted-foreground text-xs">
                 <Loader2 className="w-3 h-3 animate-spin mr-2" />
