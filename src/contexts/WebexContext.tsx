@@ -1079,7 +1079,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
           
           // Register event listeners for real-time updates
           addSDKLog('info', 'Registering SDK event listeners...', null, 'WebexContext');
-          
+
           // Verify agentContact module is available
           if (desktopRef.current.agentContact) {
             addSDKLog('info', 'agentContact module available', {
@@ -1089,49 +1089,88 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
           } else {
             addSDKLog('error', 'agentContact module NOT available!', null, 'WebexContext');
           }
-          
+
+          if (listenersRegisteredRef.current) {
+            addSDKLog('warn', 'agentContact listeners already registered — skipping duplicate registration', null, 'WebexContext');
+          } else {
+            listenersRegisteredRef.current = true;
+
           desktopRef.current.agentContact.addEventListener('eAgentOfferContact', (contact: any) => {
-            addSDKLog('info', '>>> eAgentOfferContact EVENT FIRED <<<', { contactType: typeof contact, contactKeys: Object.keys(contact || {}) }, 'WebexContext');
+            const iid = extractContactData(contact)?.interactionId;
+            addSDKLog('info', '>>> eAgentOfferContact EVENT FIRED <<<', { interactionId: iid, raw: contact }, 'WebexContext');
             console.log('[WebexCC] >>> eAgentOfferContact EVENT FIRED:', contact);
+            if (isDuplicateEvent('eAgentOfferContact', iid)) {
+              addSDKLog('debug', 'Duplicate eAgentOfferContact swallowed', { interactionId: iid }, 'WebexContext');
+              return;
+            }
             handleIncomingContact(contact);
           });
           addSDKLog('info', 'Registered: eAgentOfferContact listener', null, 'WebexContext');
           
           desktopRef.current.agentContact.addEventListener('eAgentContactAssigned', (contact: any) => {
-            addSDKLog('info', '>>> eAgentContactAssigned EVENT FIRED <<<', { contactType: typeof contact, contactKeys: Object.keys(contact || {}) }, 'WebexContext');
+            const iid = extractContactData(contact)?.interactionId;
+            addSDKLog('info', '>>> eAgentContactAssigned EVENT FIRED <<<', { interactionId: iid, raw: contact }, 'WebexContext');
             console.log('[WebexCC] >>> eAgentContactAssigned EVENT FIRED:', contact);
+            if (isDuplicateEvent('eAgentContactAssigned', iid)) {
+              addSDKLog('debug', 'Duplicate eAgentContactAssigned swallowed', { interactionId: iid }, 'WebexContext');
+              return;
+            }
             handleContactAssigned(contact);
           });
           addSDKLog('info', 'Registered: eAgentContactAssigned listener', null, 'WebexContext');
           
           desktopRef.current.agentContact.addEventListener('eAgentContactEnded', (contact: any) => {
-            addSDKLog('info', '>>> eAgentContactEnded EVENT FIRED <<<', contact, 'WebexContext');
+            const iid = extractContactData(contact)?.interactionId;
+            addSDKLog('info', '>>> eAgentContactEnded EVENT FIRED <<<', { interactionId: iid, raw: contact }, 'WebexContext');
             console.log('[WebexCC] >>> eAgentContactEnded EVENT FIRED:', contact);
+            if (isDuplicateEvent('eAgentContactEnded', iid)) {
+              addSDKLog('debug', 'Duplicate eAgentContactEnded swallowed', { interactionId: iid }, 'WebexContext');
+              return;
+            }
             handleContactEnded(contact);
           });
           addSDKLog('info', 'Registered: eAgentContactEnded listener', null, 'WebexContext');
           
           desktopRef.current.agentContact.addEventListener('eAgentContactWrappedUp', (contact: any) => {
-            addSDKLog('info', '>>> eAgentContactWrappedUp EVENT FIRED <<<', contact, 'WebexContext');
+            const iid = extractContactData(contact)?.interactionId;
+            addSDKLog('info', '>>> eAgentContactWrappedUp EVENT FIRED <<<', { interactionId: iid, raw: contact }, 'WebexContext');
             console.log('[WebexCC] >>> eAgentContactWrappedUp EVENT FIRED:', contact);
+            if (isDuplicateEvent('eAgentContactWrappedUp', iid)) return;
             handleContactWrappedUp(contact);
           });
           addSDKLog('info', 'Registered: eAgentContactWrappedUp listener', null, 'WebexContext');
           
           desktopRef.current.agentContact.addEventListener('eAgentWrapup', (contact: any) => {
-            addSDKLog('info', '>>> eAgentWrapup EVENT FIRED <<<', contact, 'WebexContext');
+            const iid = extractContactData(contact)?.interactionId;
+            addSDKLog('info', '>>> eAgentWrapup EVENT FIRED <<<', { interactionId: iid, raw: contact }, 'WebexContext');
             console.log('[WebexCC] >>> eAgentWrapup EVENT FIRED:', contact);
+            if (isDuplicateEvent('eAgentWrapup', iid)) return;
             handleAgentWrapup(contact);
           });
           addSDKLog('info', 'Registered: eAgentWrapup listener', null, 'WebexContext');
           
           // Additional event listeners for comprehensive contact handling
           desktopRef.current.agentContact.addEventListener('eAgentOfferContactRona', (contact: any) => {
-            addSDKLog('info', '>>> eAgentOfferContactRona EVENT FIRED <<<', contact, 'WebexContext');
-            setIncomingTask(null);
-            setAgentStateInfo(prev => prev ? { ...prev, state: 'RONA' } : null);
+            const iid = extractContactData(contact)?.interactionId;
+            addSDKLog('info', '>>> eAgentOfferContactRona EVENT FIRED <<<', { interactionId: iid, raw: contact }, 'WebexContext');
+            if (isDuplicateEvent('eAgentOfferContactRona', iid)) return;
+            // Only clear the ringing card when this RONA matches the current
+            // incoming task (or event has no id). Prevents a stray RONA from
+            // wiping a call the agent has actually answered.
+            const currentIncoming = incomingTaskRef.current;
+            if (!iid || (currentIncoming && currentIncoming.taskId === iid)) {
+              setIncomingTask(null);
+              setAgentStateInfo(prev => prev ? { ...prev, state: 'RONA' } : null);
+              addSDKLog('info', 'RONA matched incoming task — cleared', { interactionId: iid }, 'WebexContext');
+            } else {
+              addSDKLog('warn', 'RONA event ignored — no matching incoming task', {
+                ronaInteractionId: iid,
+                currentIncomingId: currentIncoming?.taskId,
+              }, 'WebexContext');
+            }
           });
           addSDKLog('info', 'Registered: eAgentOfferContactRona listener', null, 'WebexContext');
+
           
           desktopRef.current.agentContact.addEventListener('eAgentContactHeld', (contact: any) => {
             addSDKLog('info', '>>> eAgentContactHeld EVENT FIRED <<<', contact, 'WebexContext');
