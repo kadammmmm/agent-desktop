@@ -1640,85 +1640,89 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   const handleContactAssigned = (event: any) => {
     // Extract contact data from nested SDK payload
     const contact = extractContactData(event);
-    
+    const currentIncoming = incomingTaskRef.current;
+
     addSDKLog('info', 'handleContactAssigned - extracted data', {
       extracted: contact,
       rawEventKeys: Object.keys(event || {}),
       hasDataProperty: !!event?.data,
       hasInteractionProperty: !!event?.data?.interaction,
-      currentIncomingTaskId: incomingTask?.taskId,
-      currentActiveTasksCount: activeTasks.length,
+      currentIncomingTaskId: currentIncoming?.taskId,
+      currentActiveTasksCount: activeTasksRef.current.length,
     }, 'WebexContext');
     console.log('[WebexCC] handleContactAssigned - EXTRACTED:', JSON.stringify(contact, null, 2));
-    
+
     if (ronaTimerRef.current) {
       clearTimeout(ronaTimerRef.current);
       addSDKLog('info', 'Cleared RONA timer', null, 'WebexContext');
     }
-    
-    const taskId = contact.interactionId || `task-${Date.now()}`;
-    const newTask: Task = {
-      taskId,
-      mediaType: mapMediaType(contact.mediaType),
-      mediaChannel: contact.mediaChannel || 'telephony',
-      state: 'connected',
-      direction: contact.direction as 'inbound' | 'outbound',
-      queueName: contact.queueName || 'Unknown Queue',
-      ani: contact.ani || '',
-      dnis: contact.dnis || '',
-      startTime: Date.now(),
-      isRecording: contact.isRecording || false,
-      isMuted: false,
-      isHeld: false,
-      wrapUpRequired: true,
-      cadVariables: contact.cadVariables || {},
-      customerName: contact.customerName,
-      customerEmail: contact.customerEmail,
-      customerPhone: contact.customerPhone || contact.ani,
-      // SDK-specific fields for call controls
-      mediaResourceId: contact.mediaResourceId,
-      isConsult: false,
-      isPostCallConsult: false,
-    };
-    
-    addSDKLog('info', 'Creating active task from extracted contact', { taskId, newTask }, 'WebexContext');
-    
-    setActiveTasks(prev => {
-      const updated = [...prev.filter(t => t.taskId !== taskId), newTask];
-      addSDKLog('info', 'Updated activeTasks', { previousCount: prev.length, newCount: updated.length }, 'WebexContext');
-      return updated;
-    });
-    setSelectedTaskId(taskId);
-    setIncomingTask(null);
-    
-    // Set agent state to Engaged when contact is assigned
-    setAgentStateInfo(prev => prev ? { 
-      ...prev, 
+
+    // Resolve id from multiple sources; fall back to the current incoming
+    // offer's id if the assigned event is thin. Only use a synthetic id as
+    // an absolute last resort.
+    const resolvedId = contact.interactionId
+      || event?.data?.interactionId
+      || event?.interactionId
+      || currentIncoming?.taskId;
+
+    if (!resolvedId) {
+      addSDKLog('warn', 'handleContactAssigned: no interactionId resolvable — creating synthetic task', { event }, 'WebexContext');
+    }
+
+    // Set agent state to Engaged immediately so the UI reflects the answer.
+    setAgentStateInfo(prev => prev ? {
+      ...prev,
       state: 'Engaged',
-      lastStateChangeTime: Date.now()
+      lastStateChangeTime: Date.now(),
     } : null);
-    
-    // Populate customer profile from extracted contact data
-    const customerProfileData = {
-      id: taskId,
-      name: contact.customerName || contact.ani || 'Unknown Customer',
-      email: contact.customerEmail || '',
-      phone: contact.customerPhone || contact.ani || '',
-      company: contact.company || '',
-      isVerified: false,
-      tags: [] as CustomerTag[],
-      interactionHistory: [] as CallLogEntry[],
-      cadVariables: contact.cadVariables || {},
-    };
-    addSDKLog('info', 'Setting customer profile from extracted data', customerProfileData, 'WebexContext');
-    setCustomerProfile(customerProfileData);
-    
-    addSDKLog('info', `Contact assigned complete - Agent state set to Engaged`, { 
-      taskId, 
-      ani: contact.ani,
-      customerName: contact.customerName 
-    }, 'WebexContext');
+
+    // If we can resolve an id, use the idempotent hydrator (it will also
+    // fall back to the stashed offer payload if the assigned event is thin).
+    if (resolvedId) {
+      hydrateActiveTaskFromInteractionId(resolvedId, 'eAgentContactAssigned').then(ok => {
+        if (!ok) {
+          // Hydrator couldn't find data — build directly from the assigned event.
+          const startTime = currentIncoming?.startTime ?? contact.createdTimestamp ?? Date.now();
+          const newTask = buildTaskFromContact({ ...contact, interactionId: resolvedId }, startTime);
+          setActiveTasks(prev => prev.some(t => t.taskId === resolvedId) ? prev : [...prev, newTask]);
+          setSelectedTaskId(resolvedId);
+          setIncomingTask(null);
+          setCustomerProfile({
+            id: resolvedId,
+            name: contact.customerName || contact.ani || 'Unknown Customer',
+            email: contact.customerEmail || '',
+            phone: contact.customerPhone || contact.ani || '',
+            company: contact.company || '',
+            isVerified: false,
+            tags: [] as CustomerTag[],
+            interactionHistory: [] as CallLogEntry[],
+            cadVariables: contact.cadVariables || {},
+          });
+          addSDKLog('info', 'handleContactAssigned: built task directly from assigned event', { taskId: resolvedId }, 'WebexContext');
+        }
+      });
+    } else {
+      // No id available anywhere — synthesize and store.
+      const taskId = `task-${Date.now()}`;
+      const startTime = currentIncoming?.startTime ?? Date.now();
+      const newTask = buildTaskFromContact({ ...contact, interactionId: taskId }, startTime);
+      setActiveTasks(prev => [...prev, newTask]);
+      setSelectedTaskId(taskId);
+      setIncomingTask(null);
+      setCustomerProfile({
+        id: taskId,
+        name: contact.customerName || contact.ani || 'Unknown Customer',
+        email: contact.customerEmail || '',
+        phone: contact.customerPhone || contact.ani || '',
+        company: contact.company || '',
+        isVerified: false,
+        tags: [] as CustomerTag[],
+        interactionHistory: [] as CallLogEntry[],
+        cadVariables: contact.cadVariables || {},
+      });
+    }
   };
+
   
   // Handle contact ended
   const handleContactEnded = (event: any) => {
