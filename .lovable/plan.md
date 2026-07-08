@@ -1,65 +1,75 @@
-# SDK Integration Gap Analysis & Roadmap
+# Phase 2 — Feature Completeness
 
-The widget uses `@wxcc-desktop/sdk` (correct choice for an embedded Agent Desktop widget). The separate `@webex/contact-center` JS SDK is only relevant for a standalone, non-Cisco-shell desktop — **not additive here**, so we should stay on `@wxcc-desktop/sdk`.
+Four medium-effort SDK integrations that bring the widget to parity with Cisco's reference Agent Desktop. Each item is independent and can ship on its own; recommended order below.
 
-Core call lifecycle (state, accept/decline/hold/mute/end/wrapup, all consult flavors, transfer, conference, recording pause/resume, outdial, buddy agents, CAD updates, log upload) is solid. Fifteen capability gaps identified, grouped into three phases.
+## 1. Paginated aux codes (idle + wrap-up)
 
-## Phase 1 — Quick wins & correctness (S, blocking / near-blocking)
+**Problem:** Idle/wrap-up codes are loaded once from `actions.getIdleCodes()` / `getWrapUpCodes()` (and `latestData` fallback). Tenants with many codes (>50 is common in enterprise) may get truncated results, and there's no way to search.
 
-1. **Remote audio wiring** — `useRemoteAudio` hook exists but is never fed. Subscribe to the SDK media event on task assignment and call `attachStream(stream)`. Without this, voice calls have no audio in the widget.  
-   *Files:* `WebexContext.tsx` (task-assignment listener), `useRemoteAudio.ts` (already ready).  
-   *Note:* Exact event name (`eAgentContactMedia` vs. nested WebRTC payload) needs a live SDK inspection — will add a defensive multi-path listener.
+**Change:**
+- Add a small `auxCodes.ts` service that wraps `Desktop.agentConfigJsApi.fetchPaginatedAuxCodes({ workType: 'IDLE_CODE' | 'WRAP_UP_CODE', page, pageSize: 50, search })` with graceful fallback to the current path when the module is unavailable.
+- On init, fetch page 1 for each work type and store into existing `idleCodes` / `wrapUpCodes` state. Keep a `hasMore` flag + `search` helper in context.
+- Idle-code selector (`AgentStateSelector`) and wrap-up modal (`VoiceInteractionView` wrap-up view + any chat/email variants) get a search input; typing calls the paginated fetch with the search term (debounced 250 ms) and shows a "Load more" row when `hasMore`.
+- Preserve existing UUID validation for state changes — `has_role`-style guard already lives in `setAgentState`.
 
-2. **Screen pop** — Register `Desktop.screenpop.addEventListener("eScreenPop", …)` and surface the pop (URL/CRM record) in a new lightweight `ScreenPopPanel` or auto-open per config.  
-   *Files:* new `hooks/useScreenPop.ts`, new `components/command-center/ScreenPopPanel.tsx`, `WebexContext.tsx`.
+**Files:** new `src/services/auxCodes.ts`; edit `src/contexts/WebexContext.tsx` (state + fetch action), `src/components/command-center/AgentStateSelector.tsx`, wrap-up view in `VoiceInteractionView.tsx`.
 
-3. **Desktop notification bus** — Replace/augment `toast()` for incoming-contact and error alerts with `Desktop.actions.fireGeneralAutoDismissNotification` / `fireGeneralSilentNotification` so alerts surface outside the widget iframe.  
-   *Files:* new `hooks/useDesktopNotification.ts`, `WebexContext.tsx` (incoming/error paths).
+## 2. V2 agentContact API migration
 
-4. **DTMF keypad** — Wrap `Desktop.agentContact.sendDtmf(digit)` and expose a keypad in the active voice interaction view.  
-   *Files:* `WebexContext.tsx` (add `sendDtmf` action), new `DtmfKeypad` component, `VoiceInteractionView.tsx`.
+**Problem:** All contact actions use V1 methods (`accept`, `end`, `wrapup`, `consult`, `consultEnd`, `consultTransfer`, `consultConference`, `vteamTransfer`, `blindTransfer`, `buddyAgents`, `pauseRecording`, `resumeRecording`, `cancelTask`). Cisco recommends V2, and only V2 exposes `dropConferenceParticipant` and `exitConference`, which the UI can't do today.
 
-5. **Address book population** — Call `Desktop.agentStateInfo.fetchAddressBooks(...)` during initialization so the existing empty `addressBook` state actually populates (used by transfer/consult panels).  
-   *Files:* `WebexContext.tsx` init block.
+**Change:**
+- Introduce a tiny helper `callAgentContact(method, payload)` in `WebexContext.tsx` that prefers `agentContact[`${method}V2`]` and falls back to the V1 method — logged when it happens.
+- Migrate the 13 call sites through the helper. Payload shapes for V2 are pulled from `node_modules/@wxcc-desktop/sdk/dist/types/jsapi/agent-contact-jsapi.d.ts` at implementation time; wrap them in typed helpers to keep call sites clean.
+- Add two new actions to context:
+  - `dropConferenceParticipant(taskId, participantId)`
+  - `exitConference(taskId)` (currently `exitConference` exists but just ends the task; wire the real SDK method).
+- Update conference UI (participants list from `eParticipantJoinedConference` state) to show a "Remove" button per party.
 
-6. **Missing agentContact events** — Register listeners for `eAgentConsultEndFailed`, `eAgentCtqCancelled`, `eAgentCtqFailed`, `eAgentCtqCancelFailed`, `eContactOwnerChanged`, `eParticipantJoinedConference`, `eParticipantLeftConference`, `eAgentConsultTransferring`, `eAgentContactAniUpdated` so failures/transitions no longer leave the UI stuck.  
-   *Files:* `WebexContext.tsx`.
+**Files:** `src/contexts/WebexContext.tsx` (13 methods + 2 new actions), possibly new small `ConferenceParticipants` UI in `VoiceInteractionView.tsx`.
 
-## Phase 2 — Feature completeness (M)
+## 3. Keyboard shortcuts
 
-7. **Paginated aux codes** — Replace `latestData`-only idle/wrap-up code loading with `Desktop.agentConfigJsApi.fetchPaginatedAuxCodes(...)` + search UI. Needed for tenants with many codes.
+**Problem:** No keyboard shortcuts. Power agents want accept / decline / hold / mute / end from the keyboard.
 
-8. **V2 agentContact methods** — Migrate `accept/end/wrapup/consult/consultEnd/consultConference/vteamTransfer/blindTransfer/consultTransfer/buddyAgents/pauseRecording/resumeRecording/cancelTask` to their `*V2` counterparts and add `dropConferenceParticipant` + `exitConference` for granular conference control.
+**Change:**
+- New `src/hooks/useShortcutKeys.ts` that:
+  - Registers shortcuts via `Desktop.shortcutKey.register([...])` (SDK-scoped, avoids conflicts with other widgets).
+  - Subscribes `Desktop.shortcutKey.listenKeyPress` and dispatches to context actions.
+  - Subscribes `Desktop.shortcutKey.listenKeyConflict` and logs conflicts to SDK debug panel.
+  - Falls back to plain `window.addEventListener('keydown')` when the SDK module isn't present (demo mode / standalone), guarded by focus checks so it doesn't hijack typing in inputs.
+- Default bindings (configurable later): `Ctrl+Shift+A` accept, `Ctrl+Shift+D` decline, `Ctrl+Shift+H` toggle hold, `Ctrl+Shift+M` toggle mute, `Ctrl+Shift+E` end. Debug panel (`Ctrl+Shift+D`) stays — will pick a different letter or namespace the debug one.
+- Mount the hook once inside `CommandCenterLayout`.
 
-9. **Shortcut keys** — `Desktop.shortcutKey.register(...)` + `listenKeyPress` for accept/decline/hold/mute/end. Include conflict listener for multi-widget setups.  
-   *Files:* new `hooks/useShortcutKeys.ts`, `WebexContext.tsx`.
+**Files:** new `src/hooks/useShortcutKeys.ts`; edit `src/components/command-center/CommandCenterLayout.tsx`; small config block in `SettingsPanel.tsx` to display the active bindings (read-only for this phase).
 
-10. **Campaign / preview outdial** — Add `previewCampaignAccept/Skip`, `removePreviewContact`, and listen for `eAgentOfferCampaignReserved`, `eAgentAddCampaignReserved`, `eCampaignPreviewAcceptFailed`, `eCampaignPreviewSkipFailed`. New `CampaignContactPanel`.
+## 4. Campaign / preview outdial
 
-## Phase 3 — Advanced modules (L)
+**Problem:** Widget doesn't handle outbound campaign mode. Agents on progressive/preview campaigns see nothing.
 
-11. **Supervisor / silent monitor** — Wire `Desktop.monitoring` (start/end/hold/bargeIn + `eMonitoring*` and `eAgentMonitorStateChanged` events) behind a supervisor-only `SupervisorPanel`. Also lets regular agents know when they're monitored (compliance).
+**Change:**
+- Register listeners: `eAgentOfferCampaignReserved`, `eAgentAddCampaignReserved`, `eAgentCampaignContactUpdated`, `eCampaignPreviewAcceptFailed`, `eCampaignPreviewSkipFailed`.
+- Store reserved campaign contacts in a new `campaignContacts` context slice; each has customer info + preview timer + campaign metadata.
+- New actions on context: `acceptCampaignContact(id)` → `Desktop.dialer.previewCampaignAccept(...)`, `skipCampaignContact(id, reason)` → `previewCampaignSkip(...)`, `removeCampaignContact(id)` → `removePreviewContact(...)`.
+- New `CampaignContactPanel` (floating card like `ScreenPopPanel` or a slot in `InteractionArea` when a reservation exists) with Accept / Skip / Remove buttons + preview countdown.
+- Fire `desktopNotify` when a campaign contact is reserved so agents notice it outside the widget.
 
-12. **AI Assistant / Copilot** — Listen to `Desktop.aiAssistant` / `Desktop.dataNotifsAiAssistant` (`eSuggestedResponseAvailable`, `eMidCallSummaryResponseSubsequentAgent`, `eWellnessBreakEvent`). New `AIAssistantPanel`. Config init already attempts to load the module.
+**Files:** new `src/components/command-center/CampaignContactPanel.tsx`; edit `src/contexts/WebexContext.tsx` (state + 3 actions + 5 listeners), `src/components/command-center/CommandCenterLayout.tsx` (mount panel), `src/types/webex.ts` (small `CampaignContact` type).
 
-13. **Post-interaction recording playback** — `Desktop.postInteraction.fetchTasks` + `fetchCapture` behind a QA/supervisor `RecordingPlaybackModal`.
+## Suggested order
 
-14. **SDK i18n** — Adopt `Desktop.i18n.createInstance` + locale-change subscription; migrate string literals to translation files. Enables multi-region deployments.
-
-15. **Behavioral metrics** — Optional `Desktop.webexMetricsInternal.trackBehavioralEvent` at key interaction points.
-
-## Cleanup (bundled with Phase 1)
-
-- Delete or actually use `hooks/useSDKLogger.ts` (currently reimplemented inline in `WebexContext.tsx`).
+1. **Paginated aux codes** — smallest surface area, immediate value for enterprise tenants.
+2. **V2 API migration** — foundation; other phases benefit from typed helpers.
+3. **Shortcut keys** — self-contained UX win.
+4. **Campaign outdial** — largest, most feature-specific; only needed if outbound campaigns are in scope.
 
 ## Technical notes
 
-- Some payload schemas (screen pop event, V2 args, `eAgentContactMedia`) are not in the public npm README. We'll pull them from `node_modules/@wxcc-desktop/sdk/dist/*.d.ts` at implementation time and add typed wrappers.
-- All new SDK subscriptions must be added inside the existing production init guard (skip in demo mode) and cleaned up on unmount to prevent leaks.
-- No backend changes required — everything is client-side SDK wiring.
+- All new SDK calls stay behind the existing production init guard (skip in demo mode).
+- Payload types pulled from the SDK's own `.d.ts` files to avoid guessing.
+- No backend changes.
+- No breaking changes to existing context API — new actions/state are additive; V2 migration is transparent behind helper.
 
-## Recommendation
+## Ask before I start
 
-Start with **Phase 1** (all Small effort, includes the audio blocker) as a single follow-up change, then decide Phase 2 / Phase 3 scope based on which capabilities your deployment needs (supervisor tooling, campaigns, AI Assistant).
-
-Which phase(s) should I implement? I'd suggest Phase 1 first as a self-contained batch.
+Do you want all four in one batch, or should I ship them one at a time so you can validate each in production before the next? And is campaign outdial in scope for your deployment, or should I drop item 4?
