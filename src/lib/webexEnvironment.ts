@@ -108,7 +108,7 @@ export function getEnvironmentDiagnostics(): EnvironmentDiagnostics {
     documentReferrer: document.referrer || '[none]',
     currentUrl: window.location.href,
     hostname: window.location.hostname,
-    hasDesktopSDK: typeof (window as any).Desktop !== 'undefined',
+    hasDesktopSDK: typeof (window as any).Desktop !== 'undefined' || typeof (window as any).AGENTX_SERVICE !== 'undefined',
     hasWxccGlobal: typeof (window as any).wxcc !== 'undefined' || typeof (window as any).WxCC !== 'undefined',
     hasAgentXService: typeof (window as any).AGENTX_SERVICE !== 'undefined',
     detectedRegion: getWebexRegion(),
