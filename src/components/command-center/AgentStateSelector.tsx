@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { useWebex } from '@/contexts/WebexContext';
 import { 
@@ -29,9 +29,21 @@ const stateConfig: Record<AgentState, { label: string; className: string }> = {
 };
 
 export function AgentStateSelector({ collapsed }: AgentStateSelectorProps) {
-  const { agentState, agentProfile, idleCodes, setAgentState, isLoading, connectionError, initialize, isDemoMode } = useWebex();
+  const { agentState, agentProfile, idleCodes, setAgentState, isLoading, connectionError, initialize, isDemoMode, searchIdleCodes } = useWebex();
   const [displayTime, setDisplayTime] = useState('0:00');
   const [isRetrying, setIsRetrying] = useState(false);
+  const [idleSearch, setIdleSearch] = useState('');
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => {
+      searchIdleCodes(idleSearch);
+    }, 250);
+    return () => {
+      if (searchTimer.current) clearTimeout(searchTimer.current);
+    };
+  }, [idleSearch, searchIdleCodes]);
 
   // Update timer display every second
   useEffect(() => {
