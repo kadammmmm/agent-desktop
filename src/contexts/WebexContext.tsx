@@ -703,10 +703,32 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
 
     if (snapshot.state === 'Engaged') {
       promoteIncomingTaskIfEngaged();
+      // Safety net: if we're Engaged but have no active task, try to
+      // hydrate one from getTaskMap()/incoming offer. Recovers calls
+      // where eAgentContactAssigned was missed or delayed.
+      if (activeTasksRef.current.length === 0) {
+        const incoming = incomingTaskRef.current;
+        if (incoming?.taskId) {
+          hydrateActiveTaskFromInteractionId(incoming.taskId, 'engaged-no-active-task').catch(() => {});
+        } else {
+          // No incoming either — try TaskMap directly.
+          (async () => {
+            try {
+              const taskMap = await desktopRef.current?.actions?.getTaskMap?.();
+              if (taskMap && typeof taskMap === 'object') {
+                const firstId = Object.keys(taskMap)[0]
+                  ?? extractContactData(Object.values(taskMap)[0])?.interactionId;
+                if (firstId) hydrateActiveTaskFromInteractionId(firstId, 'engaged-taskmap-scan');
+              }
+            } catch { /* logged inside hydrator */ }
+          })();
+        }
+      }
     }
 
     return snapshot;
-  }, [addSDKLog, buildAgentStateSnapshot, promoteIncomingTaskIfEngaged]);
+  }, [addSDKLog, buildAgentStateSnapshot, promoteIncomingTaskIfEngaged, hydrateActiveTaskFromInteractionId]);
+
 
   // Initialize SDK and auto-fetch agent session
   const initialize = useCallback(async () => {
