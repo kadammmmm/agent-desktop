@@ -25,6 +25,7 @@ import { getScenarioById } from '@/lib/demoScenarios';
 import { isDemoMode, getEnvironmentDiagnostics } from '@/lib/webexEnvironment';
 import { toast } from '@/hooks/use-toast';
 import { desktopNotify } from '@/hooks/useDesktopNotification';
+import { fetchAuxCodes } from '@/services/auxCodes';
 
 export interface ScreenPopEvent {
   interactionId?: string;
@@ -34,6 +35,17 @@ export interface ScreenPopEvent {
   data?: Record<string, unknown>;
   raw?: unknown;
 }
+
+export interface CampaignContact {
+  interactionId: string;
+  campaignId?: string;
+  campaignName?: string;
+  customerName?: string;
+  phoneNumber?: string;
+  previewDeadline?: number;
+  raw?: unknown;
+}
+
 
 interface WebexContextType {
   // Connection state
@@ -85,6 +97,18 @@ interface WebexContextType {
   // Screen pop (Desktop.screenpop -> eScreenPop)
   screenPop: ScreenPopEvent | null;
   dismissScreenPop: () => void;
+
+  // Campaign reservations (preview/progressive outbound)
+  campaignContacts: CampaignContact[];
+  acceptCampaignContact: (interactionId: string) => Promise<void>;
+  skipCampaignContact: (interactionId: string) => Promise<void>;
+  removeCampaignContact: (interactionId: string) => Promise<void>;
+
+  // Paginated aux-code search
+  searchIdleCodes: (query: string) => Promise<void>;
+  searchWrapUpCodes: (query: string) => Promise<void>;
+  idleCodesHasMore: boolean;
+  wrapUpCodesHasMore: boolean;
   
   // Demo settings reference
   demoAutoIncomingEnabled: boolean;
@@ -114,6 +138,7 @@ interface WebexContextType {
   cancelConsult: (taskId: string) => Promise<void>;
   conferenceCall: (taskId: string) => Promise<void>;
   exitConference: (taskId: string) => Promise<void>;
+  dropConferenceParticipant: (taskId: string, participantId: string) => Promise<void>;
   outdial: (dialNumber: string, entryPointId: string) => Promise<void>;
   startRecording: (taskId: string) => Promise<void>;
   stopRecording: (taskId: string) => Promise<void>;
@@ -253,6 +278,13 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   // Screen pop
   const [screenPop, setScreenPop] = useState<ScreenPopEvent | null>(null);
   const dismissScreenPop = useCallback(() => setScreenPop(null), []);
+
+  // Campaign reservations
+  const [campaignContacts, setCampaignContacts] = useState<CampaignContact[]>([]);
+
+  // Aux-code pagination flags
+  const [idleCodesHasMore, setIdleCodesHasMore] = useState(false);
+  const [wrapUpCodesHasMore, setWrapUpCodesHasMore] = useState(false);
 
   // SDK Debug Logs state
   const [sdkLogs, setSdkLogs] = useState<SDKLogEntry[]>([]);
@@ -987,36 +1019,29 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
             addSDKLog('info', 'Registered: eAgentChannelReloginSuccess listener', null, 'WebexContext');
           }
           
-          // Fetch idle codes from the SDK
+          // Fetch idle + wrap-up codes (paginated via agentConfigJsApi when available)
           try {
-            addSDKLog('info', 'Fetching idle codes...', null, 'WebexContext');
-            const sdkIdleCodes = await desktopRef.current.actions.getIdleCodes();
-            if (sdkIdleCodes && Array.isArray(sdkIdleCodes)) {
-              setIdleCodes(sdkIdleCodes.map((code: any) => ({
-                id: code.id,
-                name: code.name,
-              })));
-              addSDKLog('info', `Loaded ${sdkIdleCodes.length} idle codes`, null, 'WebexContext');
+            addSDKLog('info', 'Fetching idle codes (paginated)...', null, 'WebexContext');
+            const idlePage = await fetchAuxCodes({ workType: 'IDLE_CODE', page: 0, pageSize: 100 });
+            if (idlePage.codes.length > 0) {
+              setIdleCodes(idlePage.codes);
+              setIdleCodesHasMore(idlePage.hasMore);
+              addSDKLog('info', `Loaded ${idlePage.codes.length}/${idlePage.totalRecords || idlePage.codes.length} idle codes`, null, 'WebexContext');
             }
           } catch (e) {
             addSDKLog('warn', 'Could not fetch idle codes', e, 'WebexContext');
-            console.warn('[WebexCC] Could not fetch idle codes:', e);
           }
-          
-          // Fetch wrap-up codes from the SDK
+
           try {
-            addSDKLog('info', 'Fetching wrap-up codes...', null, 'WebexContext');
-            const sdkWrapUpCodes = await desktopRef.current.actions.getWrapUpCodes();
-            if (sdkWrapUpCodes && Array.isArray(sdkWrapUpCodes)) {
-              setWrapUpCodes(sdkWrapUpCodes.map((code: any) => ({
-                id: code.id,
-                name: code.name,
-              })));
-              addSDKLog('info', `Loaded ${sdkWrapUpCodes.length} wrap-up codes`, null, 'WebexContext');
+            addSDKLog('info', 'Fetching wrap-up codes (paginated)...', null, 'WebexContext');
+            const wrapPage = await fetchAuxCodes({ workType: 'WRAP_UP_CODE', page: 0, pageSize: 100 });
+            if (wrapPage.codes.length > 0) {
+              setWrapUpCodes(wrapPage.codes);
+              setWrapUpCodesHasMore(wrapPage.hasMore);
+              addSDKLog('info', `Loaded ${wrapPage.codes.length}/${wrapPage.totalRecords || wrapPage.codes.length} wrap-up codes`, null, 'WebexContext');
             }
           } catch (e) {
             addSDKLog('warn', 'Could not fetch wrap-up codes', e, 'WebexContext');
-            console.warn('[WebexCC] Could not fetch wrap-up codes:', e);
           }
           
           // Register event listeners for real-time updates
@@ -1260,8 +1285,71 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
           } catch (e) {
             addSDKLog('warn', 'Could not register eOutdialFailed listener', { error: e instanceof Error ? e.message : String(e) }, 'WebexContext');
           }
-          
+
+          // ---- Campaign / preview outdial events ----
+          const extractCampaignContact = (event: any): CampaignContact => {
+            const raw = event?.data?.interaction ?? event?.interaction ?? event?.data ?? event ?? {};
+            const cad = raw.callAssociatedData || {};
+            const cd = raw.callAssociatedDetails || {};
+            return {
+              interactionId: raw.interactionId || event?.interactionId || `campaign-${Date.now()}`,
+              campaignId: raw.campaignId || raw.outboundCampaignId,
+              campaignName: raw.campaignName || cad.CampaignName?.value,
+              customerName: cad.G_Customer_Name?.value || cad.L_Caller_Name?.value,
+              phoneNumber: cd.ani || raw.dn || raw.phoneNumber,
+              previewDeadline:
+                typeof raw.previewTimeout === 'number'
+                  ? Date.now() + raw.previewTimeout * 1000
+                  : undefined,
+              raw: event,
+            };
+          };
+
+          try {
+            registerSafe('eAgentOfferCampaignReserved', (event: any) => {
+              addSDKLog('info', '>>> eAgentOfferCampaignReserved <<<', event, 'Campaign');
+              const c = extractCampaignContact(event);
+              setCampaignContacts((prev) => [...prev.filter((p) => p.interactionId !== c.interactionId), c]);
+              desktopNotify({
+                title: `Campaign reservation${c.campaignName ? ` · ${c.campaignName}` : ''}`,
+                data: c.customerName || c.phoneNumber || '',
+                type: 'info',
+              });
+            });
+            registerSafe('eAgentAddCampaignReserved', (event: any) => {
+              addSDKLog('info', '>>> eAgentAddCampaignReserved <<<', event, 'Campaign');
+              const c = extractCampaignContact(event);
+              setCampaignContacts((prev) => [...prev.filter((p) => p.interactionId !== c.interactionId), c]);
+            });
+            registerSafe('eAgentCampaignContactUpdated', (event: any) => {
+              addSDKLog('info', '>>> eAgentCampaignContactUpdated <<<', event, 'Campaign');
+              const c = extractCampaignContact(event);
+              setCampaignContacts((prev) => prev.map((p) => (p.interactionId === c.interactionId ? { ...p, ...c } : p)));
+            });
+          } catch (e) {
+            addSDKLog('warn', 'Could not register campaign contact listeners', { error: e instanceof Error ? e.message : String(e) }, 'WebexContext');
+          }
+
+          try {
+            if (desktopRef.current.dialer?.addEventListener) {
+              desktopRef.current.dialer.addEventListener('eCampaignPreviewAcceptFailed', (event: any) => {
+                addSDKLog('error', '>>> eCampaignPreviewAcceptFailed <<<', event, 'Campaign');
+                toast({ title: 'Campaign accept failed', description: event?.data?.reason || 'Unknown error', variant: 'destructive' });
+              });
+              desktopRef.current.dialer.addEventListener('eCampaignPreviewSkipFailed', (event: any) => {
+                addSDKLog('error', '>>> eCampaignPreviewSkipFailed <<<', event, 'Campaign');
+              });
+              desktopRef.current.dialer.addEventListener?.('eCampaignPreviewRemoveFailed', (event: any) => {
+                addSDKLog('error', '>>> eCampaignPreviewRemoveFailed <<<', event, 'Campaign');
+              });
+              addSDKLog('info', 'Registered: campaign dialer failure listeners', null, 'WebexContext');
+            }
+          } catch (e) {
+            addSDKLog('warn', 'Could not register campaign dialer listeners', { error: e instanceof Error ? e.message : String(e) }, 'WebexContext');
+          }
+
           addSDKLog('info', 'SDK initialization complete - all event listeners registered', null, 'WebexContext');
+
           
           // Hydrate current interactions from TaskMap
           try {
@@ -1810,7 +1898,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       if (!runningInDemoMode && desktopRef.current) {
         // Real SDK call
         console.log('[WebexCC] Accepting task via SDK:', taskId);
-        await desktopRef.current.agentContact.accept({ interactionId: taskId });
+        await callAgentContact('accept', { interactionId: taskId });
         // Task assignment will be handled via event listener
         return;
       }
@@ -1993,12 +2081,117 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     }
   }, [runningInDemoMode, addSDKLog]);
 
+  // ---- Paginated aux-code search (idle + wrap-up) ----
+  const searchIdleCodes = useCallback(async (query: string) => {
+    try {
+      const page = await fetchAuxCodes({ workType: 'IDLE_CODE', page: 0, pageSize: 100, search: query });
+      setIdleCodes(page.codes);
+      setIdleCodesHasMore(page.hasMore);
+      addSDKLog('debug', 'searchIdleCodes', { query, count: page.codes.length }, 'AuxCodes');
+    } catch (e) {
+      addSDKLog('warn', 'searchIdleCodes failed', { error: e instanceof Error ? e.message : String(e) }, 'AuxCodes');
+    }
+  }, [addSDKLog]);
+
+  const searchWrapUpCodes = useCallback(async (query: string) => {
+    try {
+      const page = await fetchAuxCodes({ workType: 'WRAP_UP_CODE', page: 0, pageSize: 100, search: query });
+      setWrapUpCodes(page.codes);
+      setWrapUpCodesHasMore(page.hasMore);
+      addSDKLog('debug', 'searchWrapUpCodes', { query, count: page.codes.length }, 'AuxCodes');
+    } catch (e) {
+      addSDKLog('warn', 'searchWrapUpCodes failed', { error: e instanceof Error ? e.message : String(e) }, 'AuxCodes');
+    }
+  }, [addSDKLog]);
+
+  // ---- V2 agentContact helper: prefer *V2 methods when available ----
+  const callAgentContact = useCallback((baseMethod: string, payload: any) => {
+    const ac: any = desktopRef.current?.agentContact;
+    if (!ac) throw new Error('agentContact SDK not available');
+    const v2Name = `${baseMethod}V2`;
+    if (typeof ac[v2Name] === 'function') {
+      return ac[v2Name](payload);
+    }
+    if (typeof ac[baseMethod] === 'function') {
+      addSDKLog('debug', `Using V1 fallback for ${baseMethod}`, null, 'V2');
+      return ac[baseMethod](payload);
+    }
+    throw new Error(`agentContact.${baseMethod} not available`);
+  }, [addSDKLog]);
+
+  // ---- Drop a specific participant from a conference (V2 only) ----
+  const dropConferenceParticipant = useCallback(async (taskId: string, participantId: string) => {
+    if (runningInDemoMode || !desktopRef.current?.agentContact?.dropConferenceParticipant) {
+      addSDKLog('warn', 'dropConferenceParticipant not available', { runningInDemoMode }, 'Conference');
+      return;
+    }
+    try {
+      await desktopRef.current.agentContact.dropConferenceParticipant({
+        interactionId: taskId,
+        data: { participantId },
+      });
+      addSDKLog('info', 'dropConferenceParticipant success', { taskId, participantId }, 'Conference');
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      addSDKLog('error', 'dropConferenceParticipant failed', { error: msg }, 'Conference');
+      toast({ title: 'Could not remove participant', description: msg, variant: 'destructive' });
+    }
+  }, [runningInDemoMode, addSDKLog]);
+
+  // ---- Campaign accept / skip / remove ----
+  const acceptCampaignContact = useCallback(async (interactionId: string) => {
+    const c = campaignContacts.find((x) => x.interactionId === interactionId);
+    try {
+      if (!runningInDemoMode && desktopRef.current?.dialer?.previewCampaignAccept) {
+        await desktopRef.current.dialer.previewCampaignAccept({
+          data: { interactionId, campaignId: c?.campaignId },
+        });
+      }
+      setCampaignContacts((prev) => prev.filter((p) => p.interactionId !== interactionId));
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      addSDKLog('error', 'acceptCampaignContact failed', { error: msg }, 'Campaign');
+      toast({ title: 'Accept failed', description: msg, variant: 'destructive' });
+    }
+  }, [campaignContacts, runningInDemoMode, addSDKLog]);
+
+  const skipCampaignContact = useCallback(async (interactionId: string) => {
+    const c = campaignContacts.find((x) => x.interactionId === interactionId);
+    try {
+      if (!runningInDemoMode && desktopRef.current?.dialer?.previewCampaignSkip) {
+        await desktopRef.current.dialer.previewCampaignSkip({
+          data: { interactionId, campaignId: c?.campaignId },
+        });
+      }
+      setCampaignContacts((prev) => prev.filter((p) => p.interactionId !== interactionId));
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      addSDKLog('error', 'skipCampaignContact failed', { error: msg }, 'Campaign');
+      toast({ title: 'Skip failed', description: msg, variant: 'destructive' });
+    }
+  }, [campaignContacts, runningInDemoMode, addSDKLog]);
+
+  const removeCampaignContact = useCallback(async (interactionId: string) => {
+    const c = campaignContacts.find((x) => x.interactionId === interactionId);
+    try {
+      if (!runningInDemoMode && desktopRef.current?.dialer?.removePreviewContact) {
+        await desktopRef.current.dialer.removePreviewContact({
+          data: { interactionId, campaignId: c?.campaignId },
+        });
+      }
+      setCampaignContacts((prev) => prev.filter((p) => p.interactionId !== interactionId));
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      addSDKLog('error', 'removeCampaignContact failed', { error: msg }, 'Campaign');
+    }
+  }, [campaignContacts, runningInDemoMode, addSDKLog]);
+
   // End task
   const endTask = useCallback(async (taskId: string) => {
     try {
       if (!runningInDemoMode && desktopRef.current) {
         console.log('[WebexCC] Ending task via SDK:', taskId);
-        await desktopRef.current.agentContact.end({ interactionId: taskId });
+        await callAgentContact('end', { interactionId: taskId });
         // State will be updated via event listener
         return;
       }
@@ -2029,9 +2222,10 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     try {
       if (!runningInDemoMode && desktopRef.current) {
         console.log('[WebexCC] Wrapping up task via SDK:', taskId, wrapUpCodeId);
-        await desktopRef.current.agentContact.wrapup({
+        const codeName = wrapUpCodes.find((c) => c.id === wrapUpCodeId)?.name || 'Wrap Up';
+        await callAgentContact('wrapup', {
           interactionId: taskId,
-          wrapUpCodeId: wrapUpCodeId,
+          data: { wrapUpReason: codeName, auxCodeId: wrapUpCodeId },
         });
         // State will be updated via event listener
         return;
@@ -2427,18 +2621,23 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     if (!runningInDemoMode && desktopRef.current) {
       try {
         const ac: any = desktopRef.current.agentContact;
-        const method = ac.consultConferenceEnd || ac.conferenceEnd || ac.consultEnd;
-        if (!method) {
-          throw new Error('SDK does not expose a consultConferenceEnd method');
+        // V2 SDK exposes a first-class exitConference(interactionId); prefer it.
+        if (typeof ac.exitConference === 'function') {
+          addSDKLog('info', 'Initiating exitConference (V2)', { taskId }, 'Conference');
+          await ac.exitConference({ interactionId: taskId });
+          addSDKLog('info', 'exitConference successful', { taskId }, 'Conference');
+        } else {
+          const method = ac.consultConferenceEnd || ac.conferenceEnd || ac.consultEnd;
+          if (!method) throw new Error('SDK does not expose an exitConference method');
+          addSDKLog('info', 'Initiating consultConferenceEnd (fallback)', { taskId, mediaResourceId: task?.mediaResourceId }, 'Conference');
+          await method.call(ac, {
+            interactionId: taskId,
+            isConsult: true,
+            taskId,
+            mediaResourceId: task?.mediaResourceId,
+          });
+          addSDKLog('info', 'consultConferenceEnd successful', { taskId }, 'Conference');
         }
-        addSDKLog('info', 'Initiating consultConferenceEnd (exit conference)', { taskId, mediaResourceId: task?.mediaResourceId }, 'Conference');
-        await method.call(ac, {
-          interactionId: taskId,
-          isConsult: true,
-          taskId,
-          mediaResourceId: task?.mediaResourceId,
-        });
-        addSDKLog('info', 'consultConferenceEnd successful', { taskId }, 'Conference');
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         addSDKLog('error', 'consultConferenceEnd failed', { error: msg }, 'Conference');
@@ -2564,7 +2763,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       if (!runningInDemoMode && desktopRef.current) {
         console.log('[WebexCC] Pausing recording via SDK:', taskId);
         addSDKLog('info', 'Pausing recording', { taskId }, 'Recording');
-        await desktopRef.current.agentContact.pauseRecording({ interactionId: taskId });
+        await callAgentContact('pauseRecording', { interactionId: taskId });
         addSDKLog('info', 'Recording paused', { taskId }, 'Recording');
       }
     } catch (error) {
@@ -2583,7 +2782,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       if (!runningInDemoMode && desktopRef.current) {
         console.log('[WebexCC] Resuming recording via SDK:', taskId);
         addSDKLog('info', 'Resuming recording', { taskId }, 'Recording');
-        await desktopRef.current.agentContact.resumeRecording({ interactionId: taskId });
+        await callAgentContact('resumeRecording', { interactionId: taskId, data: { autoResumed: false } });
         addSDKLog('info', 'Recording resumed', { taskId }, 'Recording');
       }
     } catch (error) {
@@ -2962,6 +3161,14 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     exportSDKLogs,
     screenPop,
     dismissScreenPop,
+    campaignContacts,
+    acceptCampaignContact,
+    skipCampaignContact,
+    removeCampaignContact,
+    searchIdleCodes,
+    searchWrapUpCodes,
+    idleCodesHasMore,
+    wrapUpCodesHasMore,
     demoAutoIncomingEnabled,
     setDemoAutoIncomingEnabled,
     initialize,
@@ -2987,6 +3194,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     cancelConsult,
     conferenceCall,
     exitConference,
+    dropConferenceParticipant,
     outdial,
     startRecording,
     stopRecording,

@@ -14,6 +14,8 @@ import { AgentMetricsDashboard } from './panels/AgentMetricsDashboard';
 import { SettingsPanel } from './panels/SettingsPanel';
 import { SDKDebugPanel } from './SDKDebugPanel';
 import { ScreenPopPanel } from './ScreenPopPanel';
+import { CampaignContactPanel } from './CampaignContactPanel';
+import { useShortcutKeys } from '@/hooks/useShortcutKeys';
 import { useWebex } from '@/contexts/WebexContext';
 import type { NavigationSection } from '@/types/webex';
 import { ChevronRight, ChevronLeft, PanelRightOpen, PanelRightClose, Bug } from 'lucide-react';
@@ -27,6 +29,10 @@ export function CommandCenterLayout() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showContextPanel, setShowContextPanel] = useState(true);
   const [showDebugPanel, setShowDebugPanel] = useState(false);
+
+  // Global agent-facing keyboard shortcuts (Ctrl+Shift+A/R/H/M/E)
+  useShortcutKeys();
+
 
   // Initialize SDK on mount
   useEffect(() => {
@@ -226,6 +232,9 @@ export function CommandCenterLayout() {
 
       {/* Screen Pop banner (Desktop.screenpop -> eScreenPop) */}
       <ScreenPopPanel />
+
+      {/* Campaign / preview outdial banner */}
+      <CampaignContactPanel />
 
       {/* SDK Debug Panel */}
       {showDebugPanel && (

@@ -16,13 +16,26 @@ export function VoiceInteractionView() {
     endTask, 
     startRecording, 
     stopRecording, 
-    wrapUpCodes, 
-    wrapUpTask 
+    wrapUpCodes,
+    wrapUpTask,
+    searchWrapUpCodes,
   } = useWebex();
   
   const task = activeTasks.find(t => t.taskId === selectedTaskId);
   const [duration, setDuration] = useState('0:00');
+  const [wrapSearch, setWrapSearch] = useState('');
   const audioRef = useRef<HTMLAudioElement>(null);
+  const wrapSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (wrapSearchTimer.current) clearTimeout(wrapSearchTimer.current);
+    wrapSearchTimer.current = setTimeout(() => searchWrapUpCodes(wrapSearch), 250);
+    return () => {
+      if (wrapSearchTimer.current) clearTimeout(wrapSearchTimer.current);
+    };
+  }, [wrapSearch, searchWrapUpCodes]);
+
+
   
   // Update duration timer
   useEffect(() => {
@@ -62,11 +75,21 @@ export function VoiceInteractionView() {
 
         <div className="w-full max-w-md">
           <p className="text-sm font-medium mb-3">Select wrap-up reason:</p>
-          <div className="grid grid-cols-2 gap-2">
+          <input
+            type="text"
+            value={wrapSearch}
+            onChange={(e) => setWrapSearch(e.target.value)}
+            placeholder="Search wrap-up codes..."
+            className="w-full mb-3 px-3 py-2 text-sm rounded border border-border bg-background outline-none focus:ring-1 focus:ring-ring"
+          />
+          <div className="grid grid-cols-2 gap-2 max-h-64 overflow-y-auto">
+            {wrapUpCodes.length === 0 && (
+              <p className="col-span-2 text-xs text-muted-foreground py-2">No matching codes.</p>
+            )}
             {wrapUpCodes.map(code => (
-              <Button 
-                key={code.id} 
-                variant="outline" 
+              <Button
+                key={code.id}
+                variant="outline"
                 className="justify-start"
                 onClick={() => wrapUpTask(task.taskId, code.id)}
               >
