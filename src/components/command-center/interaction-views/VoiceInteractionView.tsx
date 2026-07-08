@@ -3,6 +3,7 @@ import { useWebex } from '@/contexts/WebexContext';
 import { Button } from '@/components/ui/button';
 import { Phone, Pause, Play, Mic, MicOff, PhoneOff, Circle, Clock } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { DtmfKeypad } from '../DtmfKeypad';
 
 export function VoiceInteractionView() {
   const { 
@@ -138,6 +139,8 @@ export function VoiceInteractionView() {
         >
           <Circle className={cn("w-6 h-6", task.isRecording && "fill-current")} />
         </Button>
+
+        <DtmfKeypad taskId={task.taskId} />
 
         <Button 
           size="lg" 
