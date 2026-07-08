@@ -798,6 +798,57 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
             ));
           });
           addSDKLog('info', 'Registered: eAgentContactUnHeld listener', null, 'WebexContext');
+
+          // Consult lifecycle listeners
+          desktopRef.current.agentContact.addEventListener('eAgentConsultCreated', (contact: any) => {
+            addSDKLog('info', '>>> eAgentConsultCreated EVENT FIRED <<<', contact, 'Consult');
+            const taskId = contact?.interactionId || contact?.data?.interactionId;
+            const mediaResourceId = contact?.mediaResourceId || contact?.data?.mediaResourceId;
+            setConsultState(prev => ({ ...prev, isConsulting: true, consultConnected: true, mediaResourceId }));
+            if (taskId) {
+              setActiveTasks(prev => prev.map(t =>
+                t.taskId === taskId ? { ...t, state: 'consulting', isHeld: true, mediaResourceId: mediaResourceId ?? t.mediaResourceId } : t
+              ));
+            }
+          });
+          addSDKLog('info', 'Registered: eAgentConsultCreated listener', null, 'WebexContext');
+
+          desktopRef.current.agentContact.addEventListener('eAgentConsultEnded', (contact: any) => {
+            addSDKLog('info', '>>> eAgentConsultEnded EVENT FIRED <<<', contact, 'Consult');
+            const taskId = contact?.interactionId || contact?.data?.interactionId;
+            setConsultState({ isConsulting: false });
+            if (taskId) {
+              setActiveTasks(prev => prev.map(t =>
+                t.taskId === taskId && t.state === 'consulting' ? { ...t, state: 'connected', isHeld: false } : t
+              ));
+            }
+          });
+          addSDKLog('info', 'Registered: eAgentConsultEnded listener', null, 'WebexContext');
+
+          desktopRef.current.agentContact.addEventListener('eAgentConsultFailed', (contact: any) => {
+            addSDKLog('error', '>>> eAgentConsultFailed EVENT FIRED <<<', contact, 'Consult');
+            const taskId = contact?.interactionId || contact?.data?.interactionId;
+            setConsultState({ isConsulting: false });
+            if (taskId) {
+              setActiveTasks(prev => prev.map(t =>
+                t.taskId === taskId && t.state === 'consulting' ? { ...t, state: 'connected', isHeld: false } : t
+              ));
+            }
+            toast({ title: 'Consult failed', description: 'The consulted party could not be reached.', variant: 'destructive' });
+          });
+          addSDKLog('info', 'Registered: eAgentConsultFailed listener', null, 'WebexContext');
+
+          desktopRef.current.agentContact.addEventListener('eAgentConsultConferenced', (contact: any) => {
+            addSDKLog('info', '>>> eAgentConsultConferenced EVENT FIRED <<<', contact, 'Consult');
+            const taskId = contact?.interactionId || contact?.data?.interactionId;
+            setConsultState({ isConsulting: false });
+            if (taskId) {
+              setActiveTasks(prev => prev.map(t =>
+                t.taskId === taskId ? { ...t, state: 'conferencing', isHeld: false } : t
+              ));
+            }
+          });
+          addSDKLog('info', 'Registered: eAgentConsultConferenced listener', null, 'WebexContext');
           
           desktopRef.current.agentContact.addEventListener('eCallRecordingStarted', (contact: any) => {
             addSDKLog('info', '>>> eCallRecordingStarted EVENT FIRED <<<', contact, 'WebexContext');
