@@ -2038,6 +2038,13 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     return true;
   }, [addSDKLog]);
 
+  // Publish the hydrator via a ref so earlier-declared callbacks can call it.
+  useEffect(() => {
+    hydrateActiveTaskRef.current = hydrateActiveTaskFromInteractionId;
+  }, [hydrateActiveTaskFromInteractionId]);
+
+
+
 
 
   // Set agent state
