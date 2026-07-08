@@ -1728,67 +1728,80 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   const handleContactEnded = (event: any) => {
     const contact = extractContactData(event);
     const taskId = contact.interactionId || event?.data?.interactionId || event?.interactionId;
-    
+
     addSDKLog('info', 'handleContactEnded - extracted data', { extracted: contact, taskId }, 'WebexContext');
-    
-    const task = activeTasks.find(t => t.taskId === taskId);
-    
-    if (task?.wrapUpRequired) {
-      setActiveTasks(prev => prev.map(t => 
+
+    const task = activeTasksRef.current.find(t => t.taskId === taskId);
+    if (!task) {
+      addSDKLog('warn', 'handleContactEnded: no matching active task — ignoring', {
+        endedTaskId: taskId,
+        activeTaskIds: activeTasksRef.current.map(t => t.taskId),
+      }, 'WebexContext');
+      return;
+    }
+
+    if (task.wrapUpRequired) {
+      setActiveTasks(prev => prev.map(t =>
         t.taskId === taskId ? { ...t, state: 'wrapup' } : t
       ));
-      // Set agent state to WrapUp
-      setAgentStateInfo(prev => prev ? { 
-        ...prev, 
+      setAgentStateInfo(prev => prev ? {
+        ...prev,
         state: 'WrapUp',
-        lastStateChangeTime: Date.now()
+        lastStateChangeTime: Date.now(),
       } : null);
       addSDKLog('info', `Contact ended - Agent state set to WrapUp`, { taskId }, 'WebexContext');
     } else {
       setActiveTasks(prev => {
         const remaining = prev.filter(t => t.taskId !== taskId);
-        // Set agent state back to Available if no more tasks
         if (remaining.length === 0) {
-          setAgentStateInfo(prevState => prevState ? { 
-            ...prevState, 
+          setAgentStateInfo(prevState => prevState ? {
+            ...prevState,
             state: 'Available',
-            lastStateChangeTime: Date.now()
+            lastStateChangeTime: Date.now(),
           } : null);
           addSDKLog('info', `Contact ended - No remaining tasks, Agent state set to Available`, { taskId }, 'WebexContext');
         }
         return remaining;
       });
       if (selectedTaskId === taskId) {
-        setSelectedTaskId(activeTasks.find(t => t.taskId !== taskId)?.taskId || null);
+        setSelectedTaskId(activeTasksRef.current.find(t => t.taskId !== taskId)?.taskId || null);
       }
     }
   };
-  
+
   // Handle contact wrapped up
   const handleContactWrappedUp = (event: any) => {
     const contact = extractContactData(event);
     const taskId = contact.interactionId || event?.data?.interactionId || event?.interactionId;
-    
+
     addSDKLog('info', 'handleContactWrappedUp - extracted data', { extracted: contact, taskId }, 'WebexContext');
-    
+
+    if (!activeTasksRef.current.some(t => t.taskId === taskId)) {
+      addSDKLog('warn', 'handleContactWrappedUp: no matching active task — ignoring', {
+        wrappedTaskId: taskId,
+        activeTaskIds: activeTasksRef.current.map(t => t.taskId),
+      }, 'WebexContext');
+      return;
+    }
+
     setActiveTasks(prev => {
       const remaining = prev.filter(t => t.taskId !== taskId);
-      // Set agent state back to Available if no more tasks
       if (remaining.length === 0) {
-        setAgentStateInfo(prevState => prevState ? { 
-          ...prevState, 
+        setAgentStateInfo(prevState => prevState ? {
+          ...prevState,
           state: 'Available',
-          lastStateChangeTime: Date.now()
+          lastStateChangeTime: Date.now(),
         } : null);
         addSDKLog('info', `Contact wrapped up - No remaining tasks, Agent state set to Available`, { taskId }, 'WebexContext');
       }
       return remaining;
     });
     if (selectedTaskId === taskId) {
-      setSelectedTaskId(activeTasks.find(t => t.taskId !== taskId)?.taskId || null);
+      setSelectedTaskId(activeTasksRef.current.find(t => t.taskId !== taskId)?.taskId || null);
     }
     setCustomerProfile(null);
   };
+
   
   // Handle wrapup state (eAgentWrapup event)
   const handleAgentWrapup = (event: any) => {
