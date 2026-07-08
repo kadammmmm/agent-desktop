@@ -238,7 +238,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   const [sdkLogs, setSdkLogs] = useState<SDKLogEntry[]>([]);
   const logIdCounter = useRef(0);
 
-  const ronaTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const ronaTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const desktopRef = useRef<any>(null);
 
   // SDK Logging helper
