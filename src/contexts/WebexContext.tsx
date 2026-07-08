@@ -704,30 +704,31 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     if (snapshot.state === 'Engaged') {
       promoteIncomingTaskIfEngaged();
       // Safety net: if we're Engaged but have no active task, try to
-      // hydrate one from getTaskMap()/incoming offer. Recovers calls
-      // where eAgentContactAssigned was missed or delayed.
+      // hydrate one via the late-bound ref (hydrator is defined below).
       if (activeTasksRef.current.length === 0) {
         const incoming = incomingTaskRef.current;
-        if (incoming?.taskId) {
-          hydrateActiveTaskFromInteractionId(incoming.taskId, 'engaged-no-active-task').catch(() => {});
-        } else {
-          // No incoming either — try TaskMap directly.
-          (async () => {
-            try {
-              const taskMap = await desktopRef.current?.actions?.getTaskMap?.();
-              if (taskMap && typeof taskMap === 'object') {
-                const firstId = Object.keys(taskMap)[0]
-                  ?? extractContactData(Object.values(taskMap)[0])?.interactionId;
-                if (firstId) hydrateActiveTaskFromInteractionId(firstId, 'engaged-taskmap-scan');
-              }
-            } catch { /* logged inside hydrator */ }
-          })();
+        const hydrate = hydrateActiveTaskRef.current;
+        if (hydrate) {
+          if (incoming?.taskId) {
+            hydrate(incoming.taskId, 'engaged-no-active-task').catch(() => {});
+          } else {
+            (async () => {
+              try {
+                const taskMap = await desktopRef.current?.actions?.getTaskMap?.();
+                if (taskMap && typeof taskMap === 'object') {
+                  const firstKey = Object.keys(taskMap)[0];
+                  if (firstKey) hydrate(firstKey, 'engaged-taskmap-scan');
+                }
+              } catch { /* logged inside hydrator */ }
+            })();
+          }
         }
       }
     }
 
     return snapshot;
-  }, [addSDKLog, buildAgentStateSnapshot, promoteIncomingTaskIfEngaged, hydrateActiveTaskFromInteractionId]);
+  }, [addSDKLog, buildAgentStateSnapshot, promoteIncomingTaskIfEngaged]);
+
 
 
   // Initialize SDK and auto-fetch agent session
