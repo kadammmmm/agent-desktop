@@ -1,127 +1,77 @@
-# Fix Transfer, Consult (Warm), and Conference to Match Cisco SDK Contract
+# Full parity with Webex CC Tasks Call Control API in the Transfer feature
 
-## Problems Found
+## Goal
 
-Comparing `src/contexts/WebexContext.tsx` (lines 1649–1894) with the official Cisco kitchen-sink sample:
+The Transfer panel currently supports: Blind Transfer (agent / DN / queue via vteamTransfer), Consult start (agent / DN / queue), Complete transfer, Cancel consult, Conference. The Webex CC Tasks Call Control API exposes more capabilities that the Transfer UI does not yet surface. This plan adds the missing capabilities so a live agent has the same options here as on the native Cisco desktop.
 
-1. **`blindTransfer` / `consult` payload shape is wrong.** SDK expects a nested `data` object with `destinationType`; we're passing flat `transferTo`/`transferType`/`consultTo`/`consultType`. The SDK ignores these fields → transfer either 400s or targets nothing.
-2. **`consultEnd` missing required fields** (`isConsult`, `mediaResourceId`, `taskId`) — cancel-consult usually fails on agent/DN legs.
-3. **`conference` never receives the consulted-party target** — 3-way merge cannot happen without it.
-4. **No consult lifecycle events wired** — `eAgentConsultCreated`, `eAgentConsultConferenced`, `eAgentConsultEnded` are not listened to, so the "Complete Transfer" and "Conference" buttons are enabled before the consulted party is actually connected.
-5. **Demo fallback masks real SDK errors.** On production, a failed SDK call currently still mutates local state as if it succeeded, hiding the failure and confusing the agent.
+## Capabilities in the Tasks Call Control API and current status
 
-## Changes (frontend only, `src/contexts/WebexContext.tsx`)
+| # | API Capability | SDK method | Currently in Transfer UI |
+|---|---|---|---|
+| 1 | Blind transfer to Agent | `agentContact.blindTransfer` | Yes |
+| 2 | Blind transfer to Dial Number | `agentContact.blindTransfer` | Yes |
+| 3 | Blind transfer to Queue | `agentContact.vteamTransfer` (inboundqueue) | Yes |
+| 4 | Blind transfer to Entry Point | `agentContact.vteamTransfer` (inboundentrypoint) | **Missing** |
+| 5 | Consult to Agent | `agentContact.consult` (agent) | Yes |
+| 6 | Consult to Dial Number | `agentContact.consult` (dialNumber) | Yes |
+| 7 | Consult to Queue | `agentContact.consult` (queue) | Yes |
+| 8 | Consult to Entry Point | `agentContact.consult` (entryPoint) | **Missing** |
+| 9 | Complete transfer after consult | `agentContact.consultTransfer` | Yes |
+| 10 | End consult (cancel) | `agentContact.consultEnd` | Yes |
+| 11 | Conference (merge consulted party) | `agentContact.conference` | Yes (button) |
+| 12 | Consult conference end / exit conference | `agentContact.consultConferenceEnd` (agent leaves conference) | **Missing** |
+| 13 | Hold / Resume customer while consulting | `agentContact.holdResume` | Present elsewhere, but not exposed inside the consult view |
+| 14 | Buddy agents refresh for transfer targets | `agentContact.buddyAgents` | Yes |
+| 15 | Search / filter targets | client-side | Yes (agents only) |
 
-### 1. Fix `transferToAgent` (blind → agent)
+Items 4, 8, 12, plus a couple of UX gaps (queue/EP search, hold-customer while consulting) are the concrete work.
 
-```ts
-await desktopRef.current.agentContact.blindTransfer({
-  interactionId: taskId,
-  data: { agentId, destinationType: 'agent' },
-});
-```
+## Changes
 
-### 2. Fix `transferToDN` (blind → dial number)
+### 1. Add "Entry Point" as a transfer/consult target
+- Add a fourth tab **Entry Point** to `TransferConsultPanel.tsx` next to Agents / Queues / Number.
+- Reuse the already-loaded `entryPoints` list from `WebexContext`. Show name + id, filterable via the same search input pattern used by Agents.
+- Add two new context methods:
+  - `transferToEntryPoint(taskId, entryPointId)` -> `agentContact.vteamTransfer({ interactionId, data: { vteamId, vteamType: 'inboundentrypoint', mediaType: 'telephony' } })`
+  - `consultEntryPoint(taskId, entryPointId)` -> `agentContact.consult({ interactionId, data: { destinationType: 'entryPoint', to: entryPointId, mediaType: 'telephony' } })` and update `consultState` (target type `'entryPoint'`).
+- Wire the tab's row click to `handleEntryPointAction` that branches on `transferType` just like the other tabs.
 
-```ts
-await desktopRef.current.agentContact.blindTransfer({
-  interactionId: taskId,
-  data: { to: dialNumber, destinationType: 'dialNumber' },
-});
-```
+### 2. Add "Exit conference" during an active conference
+- Extend `WebexContext` with `exitConference(taskId)` -> `agentContact.consultConferenceEnd({ interactionId: taskId, data: { mediaResourceId, queueId? } })`. Fall back gracefully if the SDK method is absent.
+- In `TransferConsultPanel.tsx`, when the selected task's `state === 'conferencing'`, render a conference-active view with:
+  - Consulted party name + running timer (reuse existing timer logic).
+  - **Exit Conference** button (destructive-ghost) -> calls `exitConference`.
+  - **End Consulted Party** button -> reuses existing `consultEnd` (agent stays with customer).
+- Update task state transitions so `eAgentConsultConferenceEnded` / `eAgentConferenceEnded` events reset state to `'connected'`.
 
-`transferToQueue` already uses `vteamTransfer` correctly — leave as-is.
+### 3. Queue and Entry Point search
+- Add the same search input used on the Agents tab to Queues and Entry Points tabs so long lists are filterable by name.
 
-### 3. Fix `consultAgent` / `consultQueue` / `consultDN`
+### 4. Hold / Resume shortcut inside the consult view
+- Inside the "Consult in progress" panel (lines 105-161 of `TransferConsultPanel.tsx`), add a small **Hold / Resume Customer** toggle that calls the existing `holdResume` action from `WebexContext` for the parent task. This is the same API and the same button already available on the call bar, just surfaced where it is needed during a consult so the agent does not have to switch panels.
 
-```ts
-// agent
-data: { agentId, destinationType: 'agent' }
-// queue
-data: { to: queueId, destinationType: 'queue' }
-// dn
-data: { to: dialNumber, destinationType: 'dialNumber' }
-```
+### 5. State + typing
+- Extend `ConsultState.consultTarget.type` and `destinationType` unions in `src/types/webex.ts` to include `'entryPoint'`.
+- Extend `WebexContextType` in `WebexContext.tsx` with `transferToEntryPoint`, `consultEntryPoint`, and `exitConference`.
+- No schema, no DB, no edge function work — this is UI + SDK-call wiring only.
 
-Capture returned consulted party info onto `consultState` (store `mediaResourceId`, `isConsult`, consulted `agentId`/`to`, `destinationType`) so subsequent complete/cancel/conference calls have the required fields.
+## Files touched
 
-### 4. Fix `cancelConsult` (`consultEnd`)
+- `src/types/webex.ts` — union additions.
+- `src/contexts/WebexContext.tsx` — three new callbacks and event handling for conference-end.
+- `src/components/command-center/panels/TransferConsultPanel.tsx` — new tab, conference-active view, hold shortcut, search on queues/EPs.
 
-```ts
-await desktopRef.current.agentContact.consultEnd({
-  interactionId: taskId,
-  isConsult: true,
-  taskId,
-  mediaResourceId: task.mediaResourceId,
-});
-```
+## Validation
 
-### 5. Fix `conferenceCall`
+- Type-check passes.
+- Manual live-call test walkthrough:
+  1. Blind transfer to an Entry Point completes and the task disappears.
+  2. Consult to Entry Point rings, `Complete Transfer` and `Cancel` work.
+  3. From an active conference, `Exit Conference` leaves the customer with the consulted party and clears the task locally.
+  4. Hold / Resume during a consult toggles customer audio state without ending the consult.
+  5. Queue and Entry Point search filters the list.
 
-Pass the currently-consulted target from `consultState`:
+## Out of scope
 
-```ts
-await desktopRef.current.agentContact.conference({
-  interactionId: taskId,
-  data: {
-    ...(consulted.type === 'agent'
-        ? { agentId: consulted.id }
-        : { to: consulted.id }),
-    destinationType: consulted.type === 'agent'
-      ? 'agent'
-      : consulted.type === 'queue' ? 'queue' : 'dialNumber',
-  },
-});
-```
-
-### 6. Wire consult lifecycle events
-
-Add listeners in the SDK-init block alongside existing `eAgentContact*` listeners:
-
-- `eAgentConsultCreated` → `consultState.isConsulting = true`, capture consulted party from event payload (authoritative).
-- `eAgentConsultEnded` / `eAgentConsultFailed` → clear `consultState`, restore task state to `'connected'`, surface a toast if it failed.
-- `eAgentConsultConferenced` → set task `state = 'conferencing'`, clear `consultState.isConsulting` (party is now merged, not consulted).
-- `eAgentContactAssignedFailed` (blind transfer failure) → toast + do NOT mutate local task state.
-
-Every listener logs via `addSDKLog` (matches existing SDK Debug Panel convention).
-
-### 7. Stop demo-mode fallback from running after real SDK errors
-
-In each of the six transfer/consult/conference functions, restructure to:
-
-```ts
-if (!runningInDemoMode && desktopRef.current) {
-  try {
-    await desktopRef.current.agentContact.<method>({ ... });
-    addSDKLog('info', '<method> success', {...}, 'Transfer');
-  } catch (error) {
-    addSDKLog('error', '<method> failed', {...}, 'Transfer');
-    toast({ title: 'Transfer failed', description: <msg>, variant: 'destructive' });
-  }
-  return; // do NOT fall through to demo mutation
-}
-
-// demo branch untouched
-```
-
-### 8. UI guard in `TransferConsultPanel.tsx`
-
-Only enable **Complete Transfer** and **Conference** buttons once `consultState.consultConnected === true` (new field set by `eAgentConsultCreated`). Show a "Ringing consulted party…" state until then.
-
-## Files Touched
-
-- `src/contexts/WebexContext.tsx` — six call-control functions, three new SDK listeners, extended `ConsultState` type usage.
-- `src/types/webex.ts` — extend `ConsultState` with `consultConnected?: boolean`, `mediaResourceId?: string`, `destinationType?: 'agent'|'queue'|'dialNumber'`.
-- `src/components/command-center/panels/TransferConsultPanel.tsx` — disable Complete/Conference until `consultConnected`.
-
-## Test Matrix (post-fix, live embed)
-
-1. Blind → Agent, Blind → DN, Blind → Queue: call leaves current agent, appears on target.
-2. Consult → Agent → Complete: 3rd party rings, on answer buttons enable, complete hands over.
-3. Consult → DN → Cancel: consulted leg drops, original call resumes off hold.
-4. Consult → Agent → Conference: all 3 legs joined; SDK reports `eAgentConsultConferenced`.
-5. Failed transfer (invalid DN): toast surfaces, original task remains active and connected.
-
-## Expected Outcome
-
-All transfer, warm-consult, cold-blind, and conference flows use the correct SDK contract, wait for real SDK acknowledgement before UI transitions, and surface failures instead of silently pretending success.
+- Direct REST calls to `/tasks-call-control` endpoints — everything continues to go through the Webex JS SDK Desktop.agentContact wrappers already in use, matching the Cisco kitchen-sink pattern.
+- The wrap-up submission and call-drop-on-answer issues you raised earlier are tracked separately and not part of this change.
