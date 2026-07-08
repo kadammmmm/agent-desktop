@@ -1,45 +1,78 @@
-# Fix Agent State Change Failure (reasonCode 33)
+# Fix Agent State Change — Migrate to `stateChangeV2`
 
 ## Root Cause
 
-The SDK error payload shows the state change was rejected by Webex CC with:
-- `auxCodeId: ""` (empty string)
-- `reason: "Internal System Error"`, `reasonCode: 33`
-- `type: "AgentStateChangeFailed"`
+Logs show both Idle transitions failing with `reasonCode: 33 "Internal System Error"` even though the request carries a valid `auxCodeId` UUID (`1ab8a7b9-…`, `9901fbed-…`) that came straight from the idle codes list the SDK returned. The failure is not a bad UUID — it's the wrong API surface.
 
-In `src/contexts/WebexContext.tsx` (`setAgentState`, line ~1431-1437), when transitioning to **Available**, the code sends `auxCodeIdArray: ''` if no prior idle code exists. The Cisco Webex CC SDK's `agentStateInfo.stateChange` API **rejects empty strings** with an Internal System Error.
+The current code calls the **legacy** `Desktop.agentStateInfo.stateChange({ state, auxCodeIdArray })`. The SDK typings and the public REST API (`PUT /v2/agents/session/state` at `developer.webex.com/webex-contact-center/docs/api/v1/agents/state-change`) confirm the correct request today is:
 
-Per the official Cisco kitchen-sink sample (`webex-js-sdk/docs/samples/contact-center/app.js`), the correct sentinel for Available (no aux code) is the literal string `"0"`, not `""`.
+```ts
+{
+  channelType: string[];   // REQUIRED — e.g. ["telephony"]
+  state: "Available" | "Idle" | ...;
+  auxCodeId?: string;      // UUID for Idle, omitted for Available
+  reason?: string;
+  agentId?: string;
+}
+```
 
-The SDK itself is loading correctly — the diagnostics confirm `AGENTX_SERVICE=Yes`, `wxcc=Yes`, `Running in Agent Desktop=Yes`. The `window.Desktop=No` line is a misleading diagnostic label (the SDK is reached via `AGENTX_SERVICE`, not `window.Desktop`), but is not the source of the error.
+The legacy `stateChange` method:
+- Takes `auxCodeIdArray` as a single string, not the array shape the API expects.
+- Does not send `channelType`, which is now required.
+- Returns reasonCode 33 on the backend when the org has been migrated to multi-channel state routing (which this org clearly has — the idle codes load fine but state transitions are rejected).
 
-## Changes
+The SDK exposes the correct method as `Desktop.agentStateInfo.stateChangeV2(...)` with the exact shape above.
 
-### `src/contexts/WebexContext.tsx` — `setAgentState` (around line 1431)
+The prior `"0"` sentinel for Available is also obsolete under v2 — you simply omit `auxCodeId`.
 
-For the `Available` branch:
-- Replace `const currentAuxCode = agentState?.idleCode?.id || '';` with `const currentAuxCode = '0';`
-- Rationale: When going Available, no idle/aux code is applicable. `"0"` is the Cisco-defined sentinel; empty string is invalid.
+## Changes — `src/contexts/WebexContext.tsx`
 
-For the `Idle` branch (already correct):
-- Leaves existing UUID validation intact.
+### 1. Rewrite `setAgentState` to use `stateChangeV2`
 
-Add an SDK log line noting the sentinel value being sent, to make future debugging obvious.
+Replace the two branches inside the `if (!runningInDemoMode && desktopRef.current)` block:
 
-### `src/lib/webexEnvironment.ts` — diagnostic label clarity (optional, minor)
+- **Idle branch:** Keep UUID validation. Call:
+  ```ts
+  await desktopRef.current.agentStateInfo.stateChangeV2({
+    channelType: getActiveChannelTypes(),   // helper below
+    state: 'Idle',
+    auxCodeId: idleCodeId,
+  });
+  ```
 
-Update the `hasDesktopSDK` diagnostic to also treat presence of `AGENTX_SERVICE` as a positive signal, so the SDK Debug Panel doesn't show a confusing "No" when the SDK is actually available. This is cosmetic only and prevents future user confusion.
+- **Available branch:** Drop the `"0"` sentinel and any `agentState?.idleCode?.id` fallback. Call:
+  ```ts
+  await desktopRef.current.agentStateInfo.stateChangeV2({
+    channelType: getActiveChannelTypes(),
+    state: 'Available',
+  });
+  ```
 
-## Verification
+- **Fallback:** If `stateChangeV2` is not available on the SDK build (older desktop), log a warning and fall back to the legacy `stateChange` path so the widget still works in older environments. Do not silently mutate local state on failure — the existing catch block already avoids that.
 
-1. Rebuild the widget and reload inside Agent Desktop.
-2. Trigger a state change to **Available** from the state selector.
-3. Confirm:
-   - No `AgentStateChangeFailed` event in the SDK Debug Panel.
-   - Agent state visibly transitions to Available in both the widget and the native Cisco desktop.
-4. Trigger a state change to **Idle** with a specific idle code and confirm it still succeeds.
+### 2. Add `getActiveChannelTypes()` helper
+
+Small helper inside the context that returns the channel-type list from the agent's active channels reported by `latestData` / `agentInfo`. If none can be resolved, default to `['telephony']` (the widget's core channel and the one the current agent profile has enabled per the logs — telephony DN registration is in the trace).
+
+### 3. Update SDK logging
+
+Change the two `addSDKLog('info', 'State change request sent: …')` lines to include the exact v2 payload sent (channel types + auxCodeId when present), so future debugging shows the real request shape.
+
+### 4. Types
+
+If `src/types/webex.ts` declares any narrow `stateChange` payload types tied to `auxCodeIdArray`, widen or add a `StateChangeV2Payload` type mirroring the SDK's `StateChangeV2` shape. No breaking changes to `AgentState` string union.
 
 ## Out of Scope
 
-- No changes to the transfer/consult/conference logic from the prior turn.
-- No changes to the SDK loading flow — the SDK is loading properly; only the state-change payload is malformed.
+- No changes to transfer/consult/conference (fixed in earlier turns).
+- No changes to SDK loading — logs show init succeeds.
+- No changes to idle code fetching — the 20 loaded codes are correct.
+- No REST-API calls from the client; we continue to use the SDK method.
+
+## Verification
+
+1. Reload the widget inside Agent Desktop.
+2. From the state selector, switch to **Available** — confirm no `AgentStateChangeFailed` event, state visible as Available in both widget and native desktop.
+3. Switch to **Idle** and pick a specific idle code — confirm success and that the chosen code name renders in the state selector.
+4. Confirm the SDK Debug Panel shows `stateChangeV2` request log lines carrying `channelType`, `state`, and `auxCodeId` (Idle) / no `auxCodeId` (Available).
+5. Trigger a call to confirm engaged/wrap-up state transitions still work end-to-end.

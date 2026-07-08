@@ -1409,35 +1409,45 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   const setAgentState = useCallback(async (state: AgentState, idleCodeId?: string) => {
     try {
       if (!runningInDemoMode && desktopRef.current) {
-        // Real SDK call - stateChange expects { state: "Available" | "Idle", auxCodeIdArray: string }
         console.log('[WebexCC] Setting agent state via SDK:', state, idleCodeId);
         addSDKLog('info', `Requesting state change: ${state}`, { idleCodeId }, 'WebexContext');
-        
-        // The SDK only supports Available and Idle via stateChange
+
+        const agentStateInfo = desktopRef.current.agentStateInfo;
+        const hasV2 = typeof agentStateInfo?.stateChangeV2 === 'function';
+
+        // Determine channel types the agent is provisioned for. Default to telephony.
+        const channelType: string[] = ['telephony'];
+
         if (state === 'Idle') {
-          // Idle state REQUIRES a valid UUID auxCodeId
+          // Idle REQUIRES a valid UUID auxCodeId
           if (!idleCodeId || !isValidUUID(idleCodeId)) {
             const errorMsg = `Cannot change to Idle state: invalid or missing idle code ID. Received: "${idleCodeId}". Ensure idle codes are loaded.`;
             addSDKLog('error', errorMsg, { idleCodeId, idleCodesLoaded: idleCodes.length }, 'WebexContext');
             console.error('[WebexCC]', errorMsg);
-            // Don't update local state - the request is invalid
             return;
           }
-          await desktopRef.current.agentStateInfo.stateChange({
-            state: 'Idle',
-            auxCodeIdArray: idleCodeId,
-          });
-          addSDKLog('info', `State change request sent: Idle with code ${idleCodeId}`, null, 'WebexContext');
+
+          if (hasV2) {
+            const payload = { channelType, state: 'Idle' as const, auxCodeId: idleCodeId };
+            await agentStateInfo.stateChangeV2(payload);
+            addSDKLog('info', `stateChangeV2 request sent`, payload, 'WebexContext');
+          } else {
+            addSDKLog('warn', 'stateChangeV2 unavailable, falling back to legacy stateChange', null, 'WebexContext');
+            await agentStateInfo.stateChange({ state: 'Idle', auxCodeIdArray: idleCodeId });
+            addSDKLog('info', `Legacy stateChange sent: Idle with code ${idleCodeId}`, null, 'WebexContext');
+          }
         } else if (state === 'Available') {
-          // Available state - Cisco requires the sentinel "0" (empty string triggers reasonCode 33 Internal System Error)
-          const currentAuxCode = '0';
-          await desktopRef.current.agentStateInfo.stateChange({
-            state: 'Available',
-            auxCodeIdArray: currentAuxCode,
-          });
-          addSDKLog('info', `State change request sent: Available (auxCodeIdArray="0")`, null, 'WebexContext');
+          if (hasV2) {
+            const payload = { channelType, state: 'Available' as const };
+            await agentStateInfo.stateChangeV2(payload);
+            addSDKLog('info', `stateChangeV2 request sent`, payload, 'WebexContext');
+          } else {
+            addSDKLog('warn', 'stateChangeV2 unavailable, falling back to legacy stateChange', null, 'WebexContext');
+            // Legacy path: pass sentinel "0" (empty string is rejected with reasonCode 33)
+            await agentStateInfo.stateChange({ state: 'Available', auxCodeIdArray: '0' });
+            addSDKLog('info', `Legacy stateChange sent: Available`, null, 'WebexContext');
+          }
         } else {
-          // For other states (Offline, etc), log a warning - these may need different SDK calls
           addSDKLog('warn', `State ${state} not directly settable via stateChange API`, null, 'WebexContext');
           console.warn(`[WebexCC] State ${state} may require different SDK call`);
         }
@@ -1453,12 +1463,11 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       }
       console.log('[WebexCC] State change requested:', state, idleCodeId);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
       addSDKLog('error', `State change failed:`, error, 'WebexContext');
       console.error('[WebexCC] State change failed:', error);
       // Don't update local state on error - let SDK events drive state
     }
-  }, [runningInDemoMode, idleCodes, addSDKLog, agentState?.idleCode?.id]);
+  }, [runningInDemoMode, idleCodes, addSDKLog]);
 
   // Accept incoming task
   const acceptTask = useCallback(async (taskId: string) => {
