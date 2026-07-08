@@ -30,6 +30,10 @@ export function CommandCenterLayout() {
   const [showContextPanel, setShowContextPanel] = useState(true);
   const [showDebugPanel, setShowDebugPanel] = useState(false);
 
+  // Global agent-facing keyboard shortcuts (Ctrl+Shift+A/R/H/M/E)
+  useShortcutKeys();
+
+
   // Initialize SDK on mount
   useEffect(() => {
     if (!isInitialized) {
@@ -228,6 +232,9 @@ export function CommandCenterLayout() {
 
       {/* Screen Pop banner (Desktop.screenpop -> eScreenPop) */}
       <ScreenPopPanel />
+
+      {/* Campaign / preview outdial banner */}
+      <CampaignContactPanel />
 
       {/* SDK Debug Panel */}
       {showDebugPanel && (
