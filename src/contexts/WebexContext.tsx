@@ -1972,6 +1972,19 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     console.log('[WebexCC] Task unmuted:', taskId);
   }, [runningInDemoMode]);
 
+  // Send DTMF tone via SDK (Desktop.agentContact.sendDtmf)
+  const sendDtmf = useCallback(async (taskId: string, digit: string) => {
+    addSDKLog('debug', 'sendDtmf', { taskId, digit }, 'DTMF');
+    try {
+      if (!runningInDemoMode && desktopRef.current?.agentContact?.sendDtmf) {
+        desktopRef.current.agentContact.sendDtmf(digit);
+      }
+    } catch (error) {
+      addSDKLog('error', 'sendDtmf failed', { error: error instanceof Error ? error.message : String(error), digit }, 'DTMF');
+      console.error('[WebexCC] sendDtmf failed:', error);
+    }
+  }, [runningInDemoMode, addSDKLog]);
+
   // End task
   const endTask = useCallback(async (taskId: string) => {
     try {
