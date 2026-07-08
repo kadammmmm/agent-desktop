@@ -25,6 +25,7 @@ import { getScenarioById } from '@/lib/demoScenarios';
 import { isDemoMode, getEnvironmentDiagnostics } from '@/lib/webexEnvironment';
 import { toast } from '@/hooks/use-toast';
 import { desktopNotify } from '@/hooks/useDesktopNotification';
+import { fetchAuxCodes } from '@/services/auxCodes';
 
 export interface ScreenPopEvent {
   interactionId?: string;
@@ -34,6 +35,17 @@ export interface ScreenPopEvent {
   data?: Record<string, unknown>;
   raw?: unknown;
 }
+
+export interface CampaignContact {
+  interactionId: string;
+  campaignId?: string;
+  campaignName?: string;
+  customerName?: string;
+  phoneNumber?: string;
+  previewDeadline?: number;
+  raw?: unknown;
+}
+
 
 interface WebexContextType {
   // Connection state
