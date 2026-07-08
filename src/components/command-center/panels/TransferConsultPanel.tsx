@@ -115,7 +115,9 @@ export function TransferConsultPanel() {
           <div className="w-20 h-20 rounded-full bg-primary/10 flex items-center justify-center mb-4 animate-pulse">
             <PhoneForwarded className="w-10 h-10 text-primary" />
           </div>
-          <h3 className="text-lg font-semibold mb-2">Consulting</h3>
+          <h3 className="text-lg font-semibold mb-2">
+            {consultState.consultConnected === false ? 'Ringing consulted party…' : 'Consulting'}
+          </h3>
           <p className="text-2xl font-bold text-primary mb-1">
             {consultState.consultTarget?.name}
           </p>
@@ -132,6 +134,7 @@ export function TransferConsultPanel() {
           <Button
             className="w-full"
             onClick={() => completeTransfer(task.taskId)}
+            disabled={consultState.consultConnected === false}
           >
             <Check className="w-4 h-4 mr-2" />
             Complete Transfer
@@ -140,6 +143,7 @@ export function TransferConsultPanel() {
             variant="outline"
             className="w-full"
             onClick={() => conferenceCall(task.taskId)}
+            disabled={consultState.consultConnected === false}
           >
             <UserPlus className="w-4 h-4 mr-2" />
             Conference

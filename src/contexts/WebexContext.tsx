@@ -23,6 +23,7 @@ import type {
 import type { SDKLogEntry, SDKLogLevel } from '@/types/sdk-debug';
 import { getScenarioById } from '@/lib/demoScenarios';
 import { isDemoMode, getEnvironmentDiagnostics } from '@/lib/webexEnvironment';
+import { toast } from '@/hooks/use-toast';
 interface WebexContextType {
   // Connection state
   isInitialized: boolean;
@@ -797,6 +798,57 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
             ));
           });
           addSDKLog('info', 'Registered: eAgentContactUnHeld listener', null, 'WebexContext');
+
+          // Consult lifecycle listeners
+          desktopRef.current.agentContact.addEventListener('eAgentConsultCreated', (contact: any) => {
+            addSDKLog('info', '>>> eAgentConsultCreated EVENT FIRED <<<', contact, 'Consult');
+            const taskId = contact?.interactionId || contact?.data?.interactionId;
+            const mediaResourceId = contact?.mediaResourceId || contact?.data?.mediaResourceId;
+            setConsultState(prev => ({ ...prev, isConsulting: true, consultConnected: true, mediaResourceId }));
+            if (taskId) {
+              setActiveTasks(prev => prev.map(t =>
+                t.taskId === taskId ? { ...t, state: 'consulting', isHeld: true, mediaResourceId: mediaResourceId ?? t.mediaResourceId } : t
+              ));
+            }
+          });
+          addSDKLog('info', 'Registered: eAgentConsultCreated listener', null, 'WebexContext');
+
+          desktopRef.current.agentContact.addEventListener('eAgentConsultEnded', (contact: any) => {
+            addSDKLog('info', '>>> eAgentConsultEnded EVENT FIRED <<<', contact, 'Consult');
+            const taskId = contact?.interactionId || contact?.data?.interactionId;
+            setConsultState({ isConsulting: false });
+            if (taskId) {
+              setActiveTasks(prev => prev.map(t =>
+                t.taskId === taskId && t.state === 'consulting' ? { ...t, state: 'connected', isHeld: false } : t
+              ));
+            }
+          });
+          addSDKLog('info', 'Registered: eAgentConsultEnded listener', null, 'WebexContext');
+
+          desktopRef.current.agentContact.addEventListener('eAgentConsultFailed', (contact: any) => {
+            addSDKLog('error', '>>> eAgentConsultFailed EVENT FIRED <<<', contact, 'Consult');
+            const taskId = contact?.interactionId || contact?.data?.interactionId;
+            setConsultState({ isConsulting: false });
+            if (taskId) {
+              setActiveTasks(prev => prev.map(t =>
+                t.taskId === taskId && t.state === 'consulting' ? { ...t, state: 'connected', isHeld: false } : t
+              ));
+            }
+            toast({ title: 'Consult failed', description: 'The consulted party could not be reached.', variant: 'destructive' });
+          });
+          addSDKLog('info', 'Registered: eAgentConsultFailed listener', null, 'WebexContext');
+
+          desktopRef.current.agentContact.addEventListener('eAgentConsultConferenced', (contact: any) => {
+            addSDKLog('info', '>>> eAgentConsultConferenced EVENT FIRED <<<', contact, 'Consult');
+            const taskId = contact?.interactionId || contact?.data?.interactionId;
+            setConsultState({ isConsulting: false });
+            if (taskId) {
+              setActiveTasks(prev => prev.map(t =>
+                t.taskId === taskId ? { ...t, state: 'conferencing', isHeld: false } : t
+              ));
+            }
+          });
+          addSDKLog('info', 'Registered: eAgentConsultConferenced listener', null, 'WebexContext');
           
           desktopRef.current.agentContact.addEventListener('eCallRecordingStarted', (contact: any) => {
             addSDKLog('info', '>>> eCallRecordingStarted EVENT FIRED <<<', contact, 'WebexContext');
@@ -1685,213 +1737,268 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
 
   // Transfer to agent (blind)
   const transferToAgent = useCallback(async (taskId: string, agentId: string) => {
-    try {
-      if (!runningInDemoMode && desktopRef.current) {
-        console.log('[WebexCC] Transferring to agent via SDK:', taskId, agentId);
+    if (!runningInDemoMode && desktopRef.current) {
+      try {
+        addSDKLog('info', 'Initiating blindTransfer to agent', { taskId, agentId }, 'Transfer');
         await desktopRef.current.agentContact.blindTransfer({
           interactionId: taskId,
-          transferTo: agentId,
-          transferType: 'agent',
+          data: { agentId, destinationType: 'agent' },
         });
-        return;
+        addSDKLog('info', 'blindTransfer to agent successful', { taskId, agentId }, 'Transfer');
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        addSDKLog('error', 'blindTransfer to agent failed', { error: msg }, 'Transfer');
+        toast({ title: 'Transfer failed', description: msg, variant: 'destructive' });
       }
-    } catch (error) {
-      console.error('[WebexCC] Transfer to agent failed:', error);
+      return;
     }
-    
-    // Demo mode or fallback
+
+    // Demo mode
     setActiveTasks(prev => prev.filter(t => t.taskId !== taskId));
-    if (selectedTaskId === taskId) {
-      setSelectedTaskId(null);
-    }
+    if (selectedTaskId === taskId) setSelectedTaskId(null);
     if (activeTasks.length <= 1) {
       setAgentStateInfo(prev => prev ? { ...prev, state: 'Available' } : null);
     }
     setConsultState({ isConsulting: false });
     setCustomerProfile(null);
-    console.log('[WebexCC] Transferred to agent:', agentId);
-  }, [activeTasks.length, selectedTaskId, runningInDemoMode]);
+  }, [activeTasks.length, selectedTaskId, runningInDemoMode, addSDKLog]);
 
   // Transfer to DN (blind)
   const transferToDN = useCallback(async (taskId: string, dialNumber: string) => {
-    try {
-      if (!runningInDemoMode && desktopRef.current) {
-        console.log('[WebexCC] Transferring to DN via SDK:', taskId, dialNumber);
+    if (!runningInDemoMode && desktopRef.current) {
+      try {
+        addSDKLog('info', 'Initiating blindTransfer to DN', { taskId, dialNumber }, 'Transfer');
         await desktopRef.current.agentContact.blindTransfer({
           interactionId: taskId,
-          transferTo: dialNumber,
-          transferType: 'dn',
+          data: { to: dialNumber, destinationType: 'dialNumber' },
         });
-        return;
+        addSDKLog('info', 'blindTransfer to DN successful', { taskId, dialNumber }, 'Transfer');
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        addSDKLog('error', 'blindTransfer to DN failed', { error: msg }, 'Transfer');
+        toast({ title: 'Transfer failed', description: msg, variant: 'destructive' });
       }
-    } catch (error) {
-      console.error('[WebexCC] Transfer to DN failed:', error);
+      return;
     }
-    
-    // Demo mode or fallback
+
+    // Demo mode
     setActiveTasks(prev => prev.filter(t => t.taskId !== taskId));
-    if (selectedTaskId === taskId) {
-      setSelectedTaskId(null);
-    }
+    if (selectedTaskId === taskId) setSelectedTaskId(null);
     if (activeTasks.length <= 1) {
       setAgentStateInfo(prev => prev ? { ...prev, state: 'Available' } : null);
     }
     setConsultState({ isConsulting: false });
     setCustomerProfile(null);
-    console.log('[WebexCC] Transferred to DN:', dialNumber);
-  }, [activeTasks.length, selectedTaskId, runningInDemoMode]);
+  }, [activeTasks.length, selectedTaskId, runningInDemoMode, addSDKLog]);
 
   // Consult agent (warm transfer start)
   const consultAgent = useCallback(async (taskId: string, agentId: string) => {
-    try {
-      if (!runningInDemoMode && desktopRef.current) {
-        console.log('[WebexCC] Consulting agent via SDK:', taskId, agentId);
+    const agent = teamAgents.find(a => a.agentId === agentId) || buddyAgents.find(a => a.agentId === agentId);
+    if (!runningInDemoMode && desktopRef.current) {
+      try {
+        addSDKLog('info', 'Initiating consult to agent', { taskId, agentId }, 'Consult');
         await desktopRef.current.agentContact.consult({
           interactionId: taskId,
-          consultTo: agentId,
-          consultType: 'agent',
+          data: { agentId, destinationType: 'agent' },
         });
+        addSDKLog('info', 'consult to agent request accepted', { taskId, agentId }, 'Consult');
+        setActiveTasks(prev => prev.map(t =>
+          t.taskId === taskId ? { ...t, state: 'consulting', isHeld: true } : t
+        ));
+        setConsultState({
+          isConsulting: true,
+          consultTarget: { type: 'agent', id: agentId, name: agent?.name || agentId, destinationType: 'agent' },
+          consultStartTime: Date.now(),
+          consultConnected: false,
+        });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        addSDKLog('error', 'consult to agent failed', { error: msg }, 'Consult');
+        toast({ title: 'Consult failed', description: msg, variant: 'destructive' });
       }
-    } catch (error) {
-      console.error('[WebexCC] Consult agent failed:', error);
+      return;
     }
-    
-    const agent = teamAgents.find(a => a.agentId === agentId);
-    setActiveTasks(prev => prev.map(t => 
+
+    // Demo mode
+    setActiveTasks(prev => prev.map(t =>
       t.taskId === taskId ? { ...t, state: 'consulting', isHeld: true } : t
     ));
     setConsultState({
       isConsulting: true,
-      consultTarget: {
-        type: 'agent',
-        id: agentId,
-        name: agent?.name || agentId,
-      },
+      consultTarget: { type: 'agent', id: agentId, name: agent?.name || agentId, destinationType: 'agent' },
       consultStartTime: Date.now(),
+      consultConnected: true,
     });
-    console.log('[WebexCC] Consulting agent:', agentId);
-  }, [teamAgents, runningInDemoMode]);
+  }, [teamAgents, buddyAgents, runningInDemoMode, addSDKLog]);
 
   // Consult queue (warm transfer start)
   const consultQueue = useCallback(async (taskId: string, queueId: string) => {
-    try {
-      if (!runningInDemoMode && desktopRef.current) {
-        console.log('[WebexCC] Consulting queue via SDK:', taskId, queueId);
+    const queue = queues.find(q => q.id === queueId);
+    if (!runningInDemoMode && desktopRef.current) {
+      try {
+        addSDKLog('info', 'Initiating consult to queue', { taskId, queueId }, 'Consult');
         await desktopRef.current.agentContact.consult({
           interactionId: taskId,
-          consultTo: queueId,
-          consultType: 'queue',
+          data: { to: queueId, destinationType: 'queue' },
         });
+        addSDKLog('info', 'consult to queue request accepted', { taskId, queueId }, 'Consult');
+        setActiveTasks(prev => prev.map(t =>
+          t.taskId === taskId ? { ...t, state: 'consulting', isHeld: true } : t
+        ));
+        setConsultState({
+          isConsulting: true,
+          consultTarget: { type: 'queue', id: queueId, name: queue?.name || queueId, destinationType: 'queue' },
+          consultStartTime: Date.now(),
+          consultConnected: false,
+        });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        addSDKLog('error', 'consult to queue failed', { error: msg }, 'Consult');
+        toast({ title: 'Consult failed', description: msg, variant: 'destructive' });
       }
-    } catch (error) {
-      console.error('[WebexCC] Consult queue failed:', error);
+      return;
     }
-    
-    const queue = queues.find(q => q.id === queueId);
-    setActiveTasks(prev => prev.map(t => 
+
+    // Demo mode
+    setActiveTasks(prev => prev.map(t =>
       t.taskId === taskId ? { ...t, state: 'consulting', isHeld: true } : t
     ));
     setConsultState({
       isConsulting: true,
-      consultTarget: {
-        type: 'queue',
-        id: queueId,
-        name: queue?.name || queueId,
-      },
+      consultTarget: { type: 'queue', id: queueId, name: queue?.name || queueId, destinationType: 'queue' },
       consultStartTime: Date.now(),
+      consultConnected: true,
     });
-    console.log('[WebexCC] Consulting queue:', queueId);
-  }, [queues, runningInDemoMode]);
+  }, [queues, runningInDemoMode, addSDKLog]);
 
   // Consult DN (warm transfer start)
   const consultDN = useCallback(async (taskId: string, dialNumber: string) => {
-    try {
-      if (!runningInDemoMode && desktopRef.current) {
-        console.log('[WebexCC] Consulting DN via SDK:', taskId, dialNumber);
+    if (!runningInDemoMode && desktopRef.current) {
+      try {
+        addSDKLog('info', 'Initiating consult to DN', { taskId, dialNumber }, 'Consult');
         await desktopRef.current.agentContact.consult({
           interactionId: taskId,
-          consultTo: dialNumber,
-          consultType: 'dn',
+          data: { to: dialNumber, destinationType: 'dialNumber' },
         });
+        addSDKLog('info', 'consult to DN request accepted', { taskId, dialNumber }, 'Consult');
+        setActiveTasks(prev => prev.map(t =>
+          t.taskId === taskId ? { ...t, state: 'consulting', isHeld: true } : t
+        ));
+        setConsultState({
+          isConsulting: true,
+          consultTarget: { type: 'dn', id: dialNumber, name: dialNumber, destinationType: 'dialNumber' },
+          consultStartTime: Date.now(),
+          consultConnected: false,
+        });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        addSDKLog('error', 'consult to DN failed', { error: msg }, 'Consult');
+        toast({ title: 'Consult failed', description: msg, variant: 'destructive' });
       }
-    } catch (error) {
-      console.error('[WebexCC] Consult DN failed:', error);
+      return;
     }
-    
-    setActiveTasks(prev => prev.map(t => 
+
+    // Demo mode
+    setActiveTasks(prev => prev.map(t =>
       t.taskId === taskId ? { ...t, state: 'consulting', isHeld: true } : t
     ));
     setConsultState({
       isConsulting: true,
-      consultTarget: {
-        type: 'dn',
-        id: dialNumber,
-        name: dialNumber,
-      },
+      consultTarget: { type: 'dn', id: dialNumber, name: dialNumber, destinationType: 'dialNumber' },
       consultStartTime: Date.now(),
+      consultConnected: true,
     });
-    console.log('[WebexCC] Consulting DN:', dialNumber);
-  }, [runningInDemoMode]);
+  }, [runningInDemoMode, addSDKLog]);
 
   // Complete transfer (after consult)
   const completeTransfer = useCallback(async (taskId: string) => {
-    try {
-      if (!runningInDemoMode && desktopRef.current) {
-        console.log('[WebexCC] Completing transfer via SDK:', taskId);
+    if (!runningInDemoMode && desktopRef.current) {
+      try {
+        addSDKLog('info', 'Initiating consultTransfer', { taskId }, 'Transfer');
         await desktopRef.current.agentContact.consultTransfer({ interactionId: taskId });
-        return;
+        addSDKLog('info', 'consultTransfer successful', { taskId }, 'Transfer');
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        addSDKLog('error', 'consultTransfer failed', { error: msg }, 'Transfer');
+        toast({ title: 'Complete transfer failed', description: msg, variant: 'destructive' });
       }
-    } catch (error) {
-      console.error('[WebexCC] Complete transfer failed:', error);
+      return;
     }
-    
-    // Demo mode or fallback
+
+    // Demo mode
     setActiveTasks(prev => prev.filter(t => t.taskId !== taskId));
-    if (selectedTaskId === taskId) {
-      setSelectedTaskId(null);
-    }
+    if (selectedTaskId === taskId) setSelectedTaskId(null);
     if (activeTasks.length <= 1) {
       setAgentStateInfo(prev => prev ? { ...prev, state: 'Available' } : null);
     }
     setConsultState({ isConsulting: false });
     setCustomerProfile(null);
-    console.log('[WebexCC] Transfer completed');
-  }, [activeTasks.length, selectedTaskId, runningInDemoMode]);
+  }, [activeTasks.length, selectedTaskId, runningInDemoMode, addSDKLog]);
 
   // Cancel consult
   const cancelConsult = useCallback(async (taskId: string) => {
-    try {
-      if (!runningInDemoMode && desktopRef.current) {
-        console.log('[WebexCC] Cancelling consult via SDK:', taskId);
-        await desktopRef.current.agentContact.consultEnd({ interactionId: taskId });
+    const task = activeTasks.find(t => t.taskId === taskId);
+    if (!runningInDemoMode && desktopRef.current) {
+      try {
+        addSDKLog('info', 'Initiating consultEnd', { taskId, mediaResourceId: task?.mediaResourceId }, 'Consult');
+        await desktopRef.current.agentContact.consultEnd({
+          interactionId: taskId,
+          isConsult: true,
+          taskId,
+          mediaResourceId: task?.mediaResourceId,
+        });
+        addSDKLog('info', 'consultEnd successful', { taskId }, 'Consult');
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        addSDKLog('error', 'consultEnd failed', { error: msg }, 'Consult');
+        toast({ title: 'Cancel consult failed', description: msg, variant: 'destructive' });
       }
-    } catch (error) {
-      console.error('[WebexCC] Cancel consult failed:', error);
+      return;
     }
-    
-    setActiveTasks(prev => prev.map(t => 
+
+    // Demo mode
+    setActiveTasks(prev => prev.map(t =>
       t.taskId === taskId ? { ...t, state: 'connected', isHeld: false } : t
     ));
     setConsultState({ isConsulting: false });
-    console.log('[WebexCC] Consult cancelled');
-  }, [runningInDemoMode]);
+  }, [activeTasks, runningInDemoMode, addSDKLog]);
 
-  // Conference call
+  // Conference call (merge consulted party)
   const conferenceCall = useCallback(async (taskId: string) => {
-    try {
-      if (!runningInDemoMode && desktopRef.current) {
-        console.log('[WebexCC] Starting conference via SDK:', taskId);
-        await desktopRef.current.agentContact.conference({ interactionId: taskId });
+    if (!runningInDemoMode && desktopRef.current) {
+      try {
+        const consulted = consultState.consultTarget;
+        if (!consulted) {
+          const msg = 'No consulted party to conference with';
+          addSDKLog('error', 'conference blocked', { taskId, reason: msg }, 'Conference');
+          toast({ title: 'Conference failed', description: msg, variant: 'destructive' });
+          return;
+        }
+        const destinationType = consulted.destinationType || (consulted.type === 'dn' ? 'dialNumber' : consulted.type);
+        const data: Record<string, unknown> = { destinationType };
+        if (destinationType === 'agent') {
+          data.agentId = consulted.id;
+        } else {
+          data.to = consulted.id;
+        }
+        addSDKLog('info', 'Initiating conference', { taskId, data }, 'Conference');
+        await desktopRef.current.agentContact.conference({ interactionId: taskId, data });
+        addSDKLog('info', 'conference successful', { taskId }, 'Conference');
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        addSDKLog('error', 'conference failed', { error: msg }, 'Conference');
+        toast({ title: 'Conference failed', description: msg, variant: 'destructive' });
       }
-    } catch (error) {
-      console.error('[WebexCC] Conference failed:', error);
+      return;
     }
-    
-    setActiveTasks(prev => prev.map(t => 
+
+    // Demo mode
+    setActiveTasks(prev => prev.map(t =>
       t.taskId === taskId ? { ...t, state: 'conferencing', isHeld: false } : t
     ));
-    console.log('[WebexCC] Conference started');
-  }, [runningInDemoMode]);
+  }, [consultState, runningInDemoMode, addSDKLog]);
+
+
 
   // Outdial - Use Desktop.dialer.startOutdial per Cisco sample
   const OUTDIAL_ENTRY_POINT_ID = 'c97bf9ea-ca01-4e43-ad45-89c20055179b';

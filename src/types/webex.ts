@@ -179,8 +179,11 @@ export interface ConsultState {
     type: 'agent' | 'queue' | 'dn';
     id: string;
     name: string;
+    destinationType?: 'agent' | 'queue' | 'dialNumber';
   };
   consultStartTime?: number;
+  consultConnected?: boolean;
+  mediaResourceId?: string;
 }
 
 export type NavigationSection = 
