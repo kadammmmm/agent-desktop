@@ -279,6 +279,13 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   const [screenPop, setScreenPop] = useState<ScreenPopEvent | null>(null);
   const dismissScreenPop = useCallback(() => setScreenPop(null), []);
 
+  // Campaign reservations
+  const [campaignContacts, setCampaignContacts] = useState<CampaignContact[]>([]);
+
+  // Aux-code pagination flags
+  const [idleCodesHasMore, setIdleCodesHasMore] = useState(false);
+  const [wrapUpCodesHasMore, setWrapUpCodesHasMore] = useState(false);
+
   // SDK Debug Logs state
   const [sdkLogs, setSdkLogs] = useState<SDKLogEntry[]>([]);
   const logIdCounter = useRef(0);
