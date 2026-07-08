@@ -1429,13 +1429,13 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
           });
           addSDKLog('info', `State change request sent: Idle with code ${idleCodeId}`, null, 'WebexContext');
         } else if (state === 'Available') {
-          // Available state - pass current aux code if available, otherwise empty
-          const currentAuxCode = agentState?.idleCode?.id || '';
+          // Available state - Cisco requires the sentinel "0" (empty string triggers reasonCode 33 Internal System Error)
+          const currentAuxCode = '0';
           await desktopRef.current.agentStateInfo.stateChange({
             state: 'Available',
             auxCodeIdArray: currentAuxCode,
           });
-          addSDKLog('info', `State change request sent: Available`, null, 'WebexContext');
+          addSDKLog('info', `State change request sent: Available (auxCodeIdArray="0")`, null, 'WebexContext');
         } else {
           // For other states (Offline, etc), log a warning - these may need different SDK calls
           addSDKLog('warn', `State ${state} not directly settable via stateChange API`, null, 'WebexContext');
