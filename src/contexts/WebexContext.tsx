@@ -85,6 +85,18 @@ interface WebexContextType {
   // Screen pop (Desktop.screenpop -> eScreenPop)
   screenPop: ScreenPopEvent | null;
   dismissScreenPop: () => void;
+
+  // Campaign reservations (preview/progressive outbound)
+  campaignContacts: CampaignContact[];
+  acceptCampaignContact: (interactionId: string) => Promise<void>;
+  skipCampaignContact: (interactionId: string) => Promise<void>;
+  removeCampaignContact: (interactionId: string) => Promise<void>;
+
+  // Paginated aux-code search
+  searchIdleCodes: (query: string) => Promise<void>;
+  searchWrapUpCodes: (query: string) => Promise<void>;
+  idleCodesHasMore: boolean;
+  wrapUpCodesHasMore: boolean;
   
   // Demo settings reference
   demoAutoIncomingEnabled: boolean;
@@ -114,6 +126,7 @@ interface WebexContextType {
   cancelConsult: (taskId: string) => Promise<void>;
   conferenceCall: (taskId: string) => Promise<void>;
   exitConference: (taskId: string) => Promise<void>;
+  dropConferenceParticipant: (taskId: string, participantId: string) => Promise<void>;
   outdial: (dialNumber: string, entryPointId: string) => Promise<void>;
   startRecording: (taskId: string) => Promise<void>;
   stopRecording: (taskId: string) => Promise<void>;
