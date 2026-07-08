@@ -2211,12 +2211,26 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
         // Real SDK call
         console.log('[WebexCC] Accepting task via SDK:', taskId);
         await callAgentContact('accept', { interactionId: taskId });
-        // Task assignment will be handled via event listener
+        addSDKLog('info', 'acceptTask: SDK accept resolved; awaiting eAgentContactAssigned', { taskId }, 'WebexContext');
+
+        // Safety net: if the assigned event doesn't materialize an active
+        // task within ~1.5s, hydrate from getTaskMap()/offer payload.
+        setTimeout(() => {
+          if (activeTasksRef.current.some(t => t.taskId === taskId)) return;
+          const hydrate = hydrateActiveTaskRef.current;
+          if (!hydrate) return;
+          addSDKLog('warn', 'acceptTask safety-net firing — no active task after 1.5s', { taskId }, 'WebexContext');
+          hydrate(taskId, 'acceptTask safety-net').catch(() => {});
+        }, 1500);
+
+        // Task assignment is normally handled via event listener
         return;
       }
     } catch (error) {
       console.error('[WebexCC] Accept task failed:', error);
+      addSDKLog('error', 'acceptTask: SDK accept rejected', { taskId, error }, 'WebexContext');
     }
+
     
     // Demo mode or fallback
     const newTask: Task = {
