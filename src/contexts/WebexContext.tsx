@@ -1794,6 +1794,34 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     setCustomerProfile(null);
   }, [activeTasks.length, selectedTaskId, runningInDemoMode, addSDKLog]);
 
+  // Blind transfer to Entry Point (uses vteamTransfer with inboundentrypoint)
+  const transferToEntryPoint = useCallback(async (taskId: string, entryPointId: string) => {
+    if (!runningInDemoMode && desktopRef.current) {
+      try {
+        addSDKLog('info', 'Initiating vteamTransfer to entryPoint', { taskId, entryPointId }, 'Transfer');
+        await desktopRef.current.agentContact.vteamTransfer({
+          interactionId: taskId,
+          data: {
+            vteamId: entryPointId,
+            vteamType: 'inboundentrypoint',
+            mediaType: 'telephony',
+          },
+        });
+        addSDKLog('info', 'vteamTransfer to entryPoint successful', { taskId, entryPointId }, 'Transfer');
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        addSDKLog('error', 'vteamTransfer to entryPoint failed', { error: msg }, 'Transfer');
+        toast({ title: 'Transfer failed', description: msg, variant: 'destructive' });
+      }
+      return;
+    }
+    // Demo mode
+    setActiveTasks(prev => prev.filter(t => t.taskId !== taskId));
+    if (selectedTaskId === taskId) setSelectedTaskId(null);
+    setConsultState({ isConsulting: false });
+    setCustomerProfile(null);
+  }, [selectedTaskId, runningInDemoMode, addSDKLog]);
+
   // Consult agent (warm transfer start)
   const consultAgent = useCallback(async (taskId: string, agentId: string) => {
     const agent = teamAgents.find(a => a.agentId === agentId) || buddyAgents.find(a => a.agentId === agentId);
