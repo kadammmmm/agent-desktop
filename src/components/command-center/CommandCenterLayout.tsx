@@ -14,6 +14,8 @@ import { AgentMetricsDashboard } from './panels/AgentMetricsDashboard';
 import { SettingsPanel } from './panels/SettingsPanel';
 import { SDKDebugPanel } from './SDKDebugPanel';
 import { ScreenPopPanel } from './ScreenPopPanel';
+import { CampaignContactPanel } from './CampaignContactPanel';
+import { useShortcutKeys } from '@/hooks/useShortcutKeys';
 import { useWebex } from '@/contexts/WebexContext';
 import type { NavigationSection } from '@/types/webex';
 import { ChevronRight, ChevronLeft, PanelRightOpen, PanelRightClose, Bug } from 'lucide-react';
