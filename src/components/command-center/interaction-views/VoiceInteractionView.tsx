@@ -16,13 +16,26 @@ export function VoiceInteractionView() {
     endTask, 
     startRecording, 
     stopRecording, 
-    wrapUpCodes, 
-    wrapUpTask 
+    wrapUpCodes,
+    wrapUpTask,
+    searchWrapUpCodes,
   } = useWebex();
   
   const task = activeTasks.find(t => t.taskId === selectedTaskId);
   const [duration, setDuration] = useState('0:00');
+  const [wrapSearch, setWrapSearch] = useState('');
   const audioRef = useRef<HTMLAudioElement>(null);
+  const wrapSearchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (wrapSearchTimer.current) clearTimeout(wrapSearchTimer.current);
+    wrapSearchTimer.current = setTimeout(() => searchWrapUpCodes(wrapSearch), 250);
+    return () => {
+      if (wrapSearchTimer.current) clearTimeout(wrapSearchTimer.current);
+    };
+  }, [wrapSearch, searchWrapUpCodes]);
+
+
   
   // Update duration timer
   useEffect(() => {
