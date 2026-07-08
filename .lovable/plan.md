@@ -1,78 +1,69 @@
-# Fix Agent State Change — Migrate to `stateChangeV2`
+## Plan: repair Agent State synchronization with Webex CC
 
-## Root Cause
+### Problem to fix
+The widget is registered with the Webex Desktop SDK, but agent state is not round-tripping correctly:
+- Native Webex Desktop state changes are not reflected in the widget.
+- Widget state changes are still failing with `Service.aqm.agent.stateChange` / `reasonCode: 33`.
 
-Logs show both Idle transitions failing with `reasonCode: 33 "Internal System Error"` even though the request carries a valid `auxCodeId` UUID (`1ab8a7b9-…`, `9901fbed-…`) that came straight from the idle codes list the SDK returned. The failure is not a bad UUID — it's the wrong API surface.
-
-The current code calls the **legacy** `Desktop.agentStateInfo.stateChange({ state, auxCodeIdArray })`. The SDK typings and the public REST API (`PUT /v2/agents/session/state` at `developer.webex.com/webex-contact-center/docs/api/v1/agents/state-change`) confirm the correct request today is:
+### Root cause found
+The current implementation moved toward `stateChangeV2`, but the installed SDK typings show the method signature is:
 
 ```ts
-{
-  channelType: string[];   // REQUIRED — e.g. ["telephony"]
-  state: "Available" | "Idle" | ...;
-  auxCodeId?: string;      // UUID for Idle, omitted for Available
-  reason?: string;
-  agentId?: string;
-}
+Desktop.agentStateInfo.stateChangeV2({
+  data: {
+    channelType: string[],
+    state: string,
+    auxCodeId?: string,
+    reason?: string,
+    agentId?: string
+  }
+})
 ```
 
-The legacy `stateChange` method:
-- Takes `auxCodeIdArray` as a single string, not the array shape the API expects.
-- Does not send `channelType`, which is now required.
-- Returns reasonCode 33 on the backend when the org has been migrated to multi-channel state routing (which this org clearly has — the idle codes load fine but state transitions are rejected).
+The current code calls:
 
-The SDK exposes the correct method as `Desktop.agentStateInfo.stateChangeV2(...)` with the exact shape above.
+```ts
+stateChangeV2({ channelType, state, auxCodeId })
+```
 
-The prior `"0"` sentinel for Available is also obsolete under v2 — you simply omit `auxCodeId`.
+That skips the required `data` envelope. The code also only listens to the cumulative `updated` event, while SDK v2 emits channel-specific state events such as `eAgentChannelStateChanged` and relogin state maps via `eAgentChannelReloginSuccess`.
 
-## Changes — `src/contexts/WebexContext.tsx`
+### Implementation steps
+1. **Fix outbound state-change calls**
+   - Update `setAgentState` to call `stateChangeV2({ data: payload })`.
+   - Keep `Available` payload free of `auxCodeId`.
+   - Keep `Idle` payload using the selected valid idle-code UUID.
+   - Preserve legacy `stateChange({ state, auxCodeIdArray })` only as a fallback when `stateChangeV2` is unavailable.
 
-### 1. Rewrite `setAgentState` to use `stateChangeV2`
+2. **Add robust channel-state parsing**
+   - Add helpers to read v2 channel state from:
+     - `latestData.agentChannelStateDetailMap`
+     - `latestData.channelsStatesMap`
+     - `eAgentChannelStateChanged.data.agentChannelStateDetail`
+     - `eAgentChannelReloginSuccess.data.agentChannelStateDetailMap`
+   - Prefer `telephony` when present, otherwise use the first valid provisioned channel.
+   - Normalize v2 `agentState` into the app’s `AgentState` type.
+   - Extract idle code and timestamp from v2 channel-state details when present.
 
-Replace the two branches inside the `if (!runningInDemoMode && desktopRef.current)` block:
+3. **Fix inbound sync from Webex Desktop**
+   - Update the existing `updated` listener to prefer v2 channel-state maps over legacy `status/subStatus`.
+   - Add listeners for:
+     - `eAgentChannelStateChanged`
+     - `eAgentChannelReloginSuccess`
+   - These listeners will update `agentState` immediately when the native Webex Desktop changes state.
 
-- **Idle branch:** Keep UUID validation. Call:
-  ```ts
-  await desktopRef.current.agentStateInfo.stateChangeV2({
-    channelType: getActiveChannelTypes(),   // helper below
-    state: 'Idle',
-    auxCodeId: idleCodeId,
-  });
-  ```
+4. **Improve channelType selection for outgoing requests**
+   - Derive channel types from SDK data when available (`channelsMap`, state detail maps, connected channels), falling back to `['telephony']`.
+   - Log the exact wrapped v2 request payload so the SDK Debug Panel shows what was sent.
 
-- **Available branch:** Drop the `"0"` sentinel and any `agentState?.idleCode?.id` fallback. Call:
-  ```ts
-  await desktopRef.current.agentStateInfo.stateChangeV2({
-    channelType: getActiveChannelTypes(),
-    state: 'Available',
-  });
-  ```
+5. **Improve failure diagnostics without fake state**
+   - On `AgentStateChangeFailed`, keep local state unchanged.
+   - Log the failed SDK payload, reason, reasonCode, trackingId, and current SDK channel-state snapshot.
+   - Do not use production mock timers or local-only state mutation.
 
-- **Fallback:** If `stateChangeV2` is not available on the SDK build (older desktop), log a warning and fall back to the legacy `stateChange` path so the widget still works in older environments. Do not silently mutate local state on failure — the existing catch block already avoids that.
-
-### 2. Add `getActiveChannelTypes()` helper
-
-Small helper inside the context that returns the channel-type list from the agent's active channels reported by `latestData` / `agentInfo`. If none can be resolved, default to `['telephony']` (the widget's core channel and the one the current agent profile has enabled per the logs — telephony DN registration is in the trace).
-
-### 3. Update SDK logging
-
-Change the two `addSDKLog('info', 'State change request sent: …')` lines to include the exact v2 payload sent (channel types + auxCodeId when present), so future debugging shows the real request shape.
-
-### 4. Types
-
-If `src/types/webex.ts` declares any narrow `stateChange` payload types tied to `auxCodeIdArray`, widen or add a `StateChangeV2Payload` type mirroring the SDK's `StateChangeV2` shape. No breaking changes to `AgentState` string union.
-
-## Out of Scope
-
-- No changes to transfer/consult/conference (fixed in earlier turns).
-- No changes to SDK loading — logs show init succeeds.
-- No changes to idle code fetching — the 20 loaded codes are correct.
-- No REST-API calls from the client; we continue to use the SDK method.
-
-## Verification
-
-1. Reload the widget inside Agent Desktop.
-2. From the state selector, switch to **Available** — confirm no `AgentStateChangeFailed` event, state visible as Available in both widget and native desktop.
-3. Switch to **Idle** and pick a specific idle code — confirm success and that the chosen code name renders in the state selector.
-4. Confirm the SDK Debug Panel shows `stateChangeV2` request log lines carrying `channelType`, `state`, and `auxCodeId` (Idle) / no `auxCodeId` (Available).
-5. Trigger a call to confirm engaged/wrap-up state transitions still work end-to-end.
+### Validation
+After implementation, verify with code-level checks and expected live behavior:
+- Changing state in native Webex Desktop updates the widget via v2 channel events.
+- Changing state in the widget sends `stateChangeV2({ data: ... })` and updates after SDK confirmation.
+- Idle sends a valid UUID `auxCodeId`; Available sends no `auxCodeId`.
+- Debug logs show channel-state events and wrapped v2 payloads.
