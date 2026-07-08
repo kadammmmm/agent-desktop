@@ -1898,7 +1898,7 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
       if (!runningInDemoMode && desktopRef.current) {
         // Real SDK call
         console.log('[WebexCC] Accepting task via SDK:', taskId);
-        await desktopRef.current.agentContact.accept({ interactionId: taskId });
+        await callAgentContact('accept', { interactionId: taskId });
         // Task assignment will be handled via event listener
         return;
       }
