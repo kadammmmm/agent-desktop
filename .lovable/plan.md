@@ -1,73 +1,57 @@
+## What the Cisco console log proves
 
-## What the uploaded log tells us
+- `AgentContactReserved` fires, then `AgentOfferContact` (interaction id `3c6c84fc-…`).
+- Our `eAgentOfferContact` listener fires **twice** for the same interaction id (duplicate delivery or duplicate registration). Downstream `handleIncomingContact` runs twice.
+- After the agent answers, our WebexContext logs show **no `eAgentContactAssigned`** event. The Cisco desktop UI still routes the call, so the assigned notification is being delayed/dropped over AQM (same class of problem as the Available state-change timeout).
+- The offer event carries `ronaTimeout: 10`. Even though we disabled the local RONA timer in production, a duplicate/late routing message can still nuke the incoming task under the wrong conditions.
 
-The exported log only covers 19:35:35–19:35:43 (SDK init + `Fetching buddy agents`). No `eAgentOfferContact`, `eAgentContactAssigned`, no state-change attempt, no `updated` events were captured. So we can't see *why* the answered call vanished — we're logging event names but not the raw payloads that would show us.
+Net effect: the ringing card gets set (twice), no assigned event lands, and something (duplicate offer processing, spurious RONA, or state `updated` flip) clears `incomingTask` without ever creating an active task. The call disappears.
 
-Two things need to happen: (1) log enough to actually diagnose, (2) close the known gaps that most likely explain "call disappears after answer" and "state stays out of sync".
+## Fix plan — all in `src/contexts/WebexContext.tsx`
 
-## Root causes (based on current code)
+### 1. Idempotency + de-duplication (root cause of thrash)
+- Track handled event fingerprints in a `useRef<Map<string, number>>` keyed by `${eventName}:${interactionId}` with a short TTL (e.g. 3 seconds). Ignore duplicate `eAgentOfferContact`, `eAgentContactAssigned`, `eAgentContactEnded`, `eAgentWrapup`, `eAgentContactWrappedUp`, and `eAgentOfferContactRona` events for the same interaction inside that window.
+- Guard listener registration itself so the block that registers `agentContact` listeners can only run once per SDK session (a `listenersRegisteredRef` flag). Prevents any accidental double registration during re-init.
 
-1. **Call disappears after answer** — In `WebexContext.tsx`:
-   - `eAgentOfferContact` populates `incomingTask` and stores `_rawContact`.
-   - After the user answers, we rely on `eAgentContactAssigned` to build the active task. On some hardphone/soft-answer paths that event either doesn't fire, fires with a different shape, or `extractContactData` returns no `interactionId` — in which case `handleContactAssigned` creates a `task-<Date.now()>` id that doesn't match anything downstream, then a stray `eAgentContactEnded` (with the *real* interactionId) filters it out and the UI goes empty.
-   - `promoteIncomingTaskIfEngaged()` only runs from `syncAgentStateFromSdkData` when the derived state is exactly `Engaged`. If the `updated` event lands with a hardphone status like `Reserved`/`Talking` that maps through `isEngagedLikeState`, that path works — but if it lands as `Available` after answer (some deployments), promotion never happens and no `getTaskMap()` hydration is triggered either.
-   - `eAgentOfferContactRona` unconditionally does `setIncomingTask(null)`. If a spurious RONA event fires right around the accept, the incoming card is wiped before promotion.
+### 2. Reliable task materialization without depending on `eAgentContactAssigned`
+Add a helper `hydrateActiveTaskFromInteractionId(interactionId, reason)`:
+- Reads `desktopRef.current?.actions?.getTaskMap()`.
+- If the task exists there, build/replace the active task using the same `extractContactData` extractor.
+- If not, fall back to the `_rawContact` stored on the current `incomingTask` when the id matches (data is identical to the offer payload, which we have).
+- Sets `activeTasks`, `selectedTaskId`, and `customerProfile` idempotently (no duplicates), preserves `startTime` from the offer.
 
-2. **Agent state still out of sync** — The recent fix polls `agentStateInfo?.latestData`, but that `agentStateInfo` is captured once at the top of `setAgentState()`. `latestData` is a live getter on the SDK object, so this normally works, but we never log the polled `subStatus` transitions, so if the poll times out we have no evidence why. We also don't re-check via `desktopRef.current.agentStateInfo` each iteration, and there is no fallback that forces `syncAgentStateFromSdkData(current, ...)` at the deadline even if the substatus hasn't matched yet.
+Call this helper in three places:
+- Inside `handleContactAssigned` — still primary path when the event fires.
+- Inside `acceptTask()` after `callAgentContact('accept', …)` resolves, wait ~1.2s and hydrate. This is the safety net for the missing/delayed assigned event.
+- Inside `syncAgentStateFromSdkData` when derived state becomes `Engaged` and `activeTasks` is empty.
 
-3. **No raw payloads in the debug export** — Current logs use `Object.keys(contact)` for offer/assigned/ended. We need full payloads (redacted only if needed) so the next log export is actually diagnosable.
+### 3. Only remove tasks when the id truly matches
+- `handleContactEnded` / `handleContactWrappedUp` / `eAgentOfferContactRona`: log and no-op when the interaction id does not match either the current `incomingTask.taskId` or any `activeTasks[].taskId`. This kills the "wrong end event wipes the call" failure mode.
+- RONA specifically: only clear `incomingTask` when RONA's `interactionId === incomingTask?.taskId`, and only after any pending answer flow (short 800ms grace) — we've seen offers arrive with `ronaTimeout: 10` on this tenant, and the SDK sometimes emits RONA-like events transitionally around answer.
 
-## Fix plan (all in `src/contexts/WebexContext.tsx`)
+### 4. Preserve the offer timestamp on promotion
+- When materializing the active task, use `contact.createdTimestamp` (SDK) or the existing `incomingTask.startTime` — never `Date.now()`. Fixes duration jumping to `0:00` and matches memory `sdk-timestamp-synchronization`.
 
-### 1. Log the raw payloads that matter
-- In each of `eAgentOfferContact`, `eAgentContactAssigned`, `eAgentContactEnded`, `eAgentOfferContactRona`, `eAgentContactHeld`, `eAgentContactUnHeld`, `eAgentWrapup`, and `eAgentContactWrappedUp` listeners: `addSDKLog('info', '>>> <evt> RAW <<<', { raw: contact }, 'WebexContext')`.
-- After `extractContactData(...)` in `handleIncomingContact` / `handleContactAssigned` / `handleContactEnded`, log the extracted object AND `interactionId` resolution path.
-- In the `agentStateInfo.updated` listener, log `{ status, subStatus, channelsMap, agentSessionId, lastStateChangeReason }` from the payload.
-- Redact PII already handled elsewhere; don't add new PII rules here.
-
-### 2. Make contact-assigned resilient
-In `handleContactAssigned`:
-- Resolve `taskId` in this order: `contact.interactionId` → `event?.data?.interactionId` → `event?.interactionId` → currently-set `incomingTask?.taskId` → `task-<Date.now()>` (last resort, plus a `warn` log).
-- Merge `_rawContact` from the current `incomingTask` when the assigned event is thin (missing ani/queueName/customerName): fall back to the values captured in the offer event.
-- Clear `incomingTask` only after the active task has been appended (already done, but keep the order explicit).
-
-In `handleContactEnded`:
-- Only remove a task if its `taskId` matches an existing active task; log a `warn` with both ids when a mismatched end event arrives, and do NOT wipe unrelated tasks.
-- Guard against ending a task that was just created <500 ms ago with a synthetic id (skip the removal, log a warn).
-
-In `eAgentOfferContactRona`:
-- Compare the RONA event's `interactionId` against `incomingTask.taskId`. Only clear `incomingTask` if they match (or the event has no id). This kills the "spurious RONA nukes the incoming card" case discussed in memory `hardphone-safe-rona-handling`.
-
-### 3. Force hydration when the agent goes Engaged (event or updated)
-In `syncAgentStateFromSdkData`, when `snapshot.state === 'Engaged'`:
-- Keep `promoteIncomingTaskIfEngaged()`.
-- Additionally kick a `getTaskMap()` hydrate pass: if it returns tasks and `activeTasks` is empty, build tasks with the same extractor used in the initial-hydration path (lines 1354–1430) and `setActiveTasks(hydratedTasks)`. This recovers the call when `eAgentContactAssigned` was missed entirely.
-
-Also add a short "post-accept safety net": inside `acceptTask()` (after `callAgentContact('accept', ...)` resolves), schedule a one-shot `setTimeout(2500ms)` that:
-- If `activeTasks` is still empty AND `incomingTask` is null (was cleared) AND agent state is Engaged-like → run the `getTaskMap()` hydration path.
-- Log every branch of this safety net so we can see it fire.
-
-### 4. Tighten the state-sync poll
-In `setAgentState()`'s `pollForConfirmation`:
+### 5. Agent state sync tightening (same session as the answer bug)
+In `setAgentState()` poll:
 - Read `desktopRef.current?.agentStateInfo?.latestData` fresh each iteration.
-- Log every observed `subStatus` change (dedupe consecutive equal values) with elapsed ms so the debug panel shows the timeline.
-- On deadline timeout, if `latestData` exists, still call `syncAgentStateFromSdkData(current, 'poll deadline fallback')` so the UI reflects whatever Cisco reports (even if it isn't the requested state) instead of staying optimistic forever.
-- Keep the existing optimistic UI update and AQM-timeout swallow.
+- Log every observed `subStatus` transition with elapsed ms.
+- On deadline, call `syncAgentStateFromSdkData(current, 'poll deadline fallback')` unconditionally so the widget reflects whatever Cisco reports rather than staying optimistic.
 
-### 5. Small correctness touch-ups
-- Ensure `handleContactAssigned` uses the extracted `mediaResourceId` from *either* the assigned event or the previously stored `_rawContact` — needed for hold/mute/record on hardphone.
-- Preserve `startTime` from the incoming task when promoting via `handleContactAssigned` (currently overwritten with `Date.now()` — memory `sdk-timestamp-synchronization` says use the SDK timestamp).
+Also, when the `agentStateInfo.updated` event fires and derived state is `Engaged` while `activeTasks` is empty and an `incomingTask` exists, immediately run `hydrateActiveTaskFromInteractionId(incomingTask.taskId, 'engaged with no active task')`.
 
-### 6. Ask user to re-export logs after this ships
-Provide a short in-chat checklist: reproduce Idle→Available, then reproduce an inbound call (offer → answer → end), then export the SDK debug logs. The new payload logs will pinpoint which event is missing or misshapen if either issue recurs.
+### 6. Diagnostic logs targeted at what's still missing
+- Log full raw payload for `eAgentContactAssigned`, `eAgentContactEnded`, `eAgentWrapup`, `eAgentContactWrappedUp`, `eAgentOfferContactRona`, and `agentStateInfo.updated` (already have Offer). This is how we'll confirm in one more log export exactly which channel actually delivers "answered".
+- Log every branch of the hydration helper (which source it recovered the task from, and whether it was a no-op).
+- Log dedup rejections so we can see duplicate deliveries in the next export.
+
+### 7. Validation
+- TypeScript check.
+- Retest in Webex Desktop: inbound call → answer → live call remains, timer counts from the true start, hold/mute/end/wrapup behave.
+- Retest Idle → Available: widget flips within a couple seconds; poll deadline fallback (if triggered) syncs to whatever Cisco reports.
+- Export SDK debug logs after retest. New payload logs + dedup logs will make any remaining issue a one-line fix.
 
 ## Technical notes
-- No backend or SDK-init changes. Purely event-handler resilience + diagnostics inside `src/contexts/WebexContext.tsx`.
-- No changes to `setAgentState`'s public contract; only the internal poll gains fresh reads, logging, and a deadline fallback.
-- Respects existing memories: production RONA timer suppression, hardphone-safe RONA, SDK timestamp sync, active interaction reconciliation.
-
-## Validation
-- TypeScript check.
-- In Webex Desktop: place an inbound call. Confirm log panel shows raw offer + assigned payloads; confirm the active task appears and stays through hold/mute/end/wrapup.
-- Toggle Idle → Available. Confirm debug panel shows the polled `subStatus` transitions and either an event-driven or poll-driven sync landing on Available.
-- If either still misbehaves, export logs and share — the raw payloads will make the next fix a targeted one-liner.
+- No SDK/init flow changes, no backend changes. Purely event-handler resilience and diagnostics inside `WebexContext.tsx`.
+- Respects existing memories: production RONA timer suppression, hardphone-safe RONA, active interaction reconciliation, SDK timestamp synchronization.
+- Dedup TTL and grace windows are conservative and only affect duplicate deliveries in a 1–3s window; normal singular events are unaffected.
