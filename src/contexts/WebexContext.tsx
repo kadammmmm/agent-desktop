@@ -896,7 +896,40 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
               );
               console.warn('[WebexCC] Failed to fetch entry points, using fallback:', epError);
             }
-            
+
+            // Fetch address book entries (populates transfer/consult DN picker)
+            try {
+              if (typeof desktopRef.current.agentStateInfo?.fetchAddressBooks === 'function') {
+                const abResp = await desktopRef.current.agentStateInfo.fetchAddressBooks();
+                const rawEntries: any[] = Array.isArray(abResp)
+                  ? abResp
+                  : Array.isArray(abResp?.data)
+                    ? abResp.data
+                    : Array.isArray(abResp?.entries)
+                      ? abResp.entries
+                      : [];
+                // Address books can be nested (book -> entries); flatten one level
+                const flattened = rawEntries.flatMap((item: any) =>
+                  Array.isArray(item?.entries) ? item.entries : [item]
+                );
+                const book = flattened
+                  .map((e: any) => ({
+                    id: e.id || e.entryId || e.number || `${e.name}-${e.number}`,
+                    name: e.name || e.displayName || e.number || 'Unknown',
+                    number: e.number || e.phoneNumber || e.dn || '',
+                  }))
+                  .filter((e) => e.number);
+                if (book.length > 0) {
+                  setAddressBook(book);
+                  addSDKLog('info', `Loaded ${book.length} address book entries`, null, 'WebexContext');
+                } else {
+                  addSDKLog('warn', 'Address book response was empty', { abResp }, 'WebexContext');
+                }
+              }
+            } catch (abErr) {
+              addSDKLog('warn', 'Could not fetch address books', { error: abErr instanceof Error ? abErr.message : String(abErr) }, 'WebexContext');
+            }
+
             console.log('[WebexCC] Agent info loaded:', agentInfo.agentName, 'State:', mappedState);
           } else {
             addSDKLog('warn', 'Agent data not ready after waiting', null, 'WebexContext');
