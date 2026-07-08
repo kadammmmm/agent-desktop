@@ -70,6 +70,10 @@ interface WebexContextType {
   sdkLogs: SDKLogEntry[];
   clearSDKLogs: () => void;
   exportSDKLogs: () => string;
+
+  // Screen pop (Desktop.screenpop -> eScreenPop)
+  screenPop: ScreenPopEvent | null;
+  dismissScreenPop: () => void;
   
   // Demo settings reference
   demoAutoIncomingEnabled: boolean;
@@ -84,6 +88,7 @@ interface WebexContextType {
   resumeTask: (taskId: string) => Promise<void>;
   muteTask: (taskId: string) => Promise<void>;
   unmuteTask: (taskId: string) => Promise<void>;
+  sendDtmf: (taskId: string, digit: string) => Promise<void>;
   endTask: (taskId: string) => Promise<void>;
   wrapUpTask: (taskId: string, wrapUpCodeId: string) => Promise<void>;
   transferToQueue: (taskId: string, queueId: string) => Promise<void>;
