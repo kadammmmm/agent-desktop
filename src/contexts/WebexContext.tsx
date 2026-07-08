@@ -1812,101 +1812,135 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
 
   // Set agent state
   const setAgentState = useCallback(async (state: AgentState, idleCodeId?: string) => {
-    try {
-      if (!runningInDemoMode && desktopRef.current) {
-        console.log('[WebexCC] Setting agent state via SDK:', state, idleCodeId);
-        addSDKLog('info', `Requesting state change: ${state}`, { idleCodeId }, 'WebexContext');
-
-        const agentStateInfo = desktopRef.current.agentStateInfo;
-        const hasV2 = typeof agentStateInfo?.stateChangeV2 === 'function';
-
-        const latestData = agentStateInfo?.latestData;
-        const channelType = getProvisionedChannelTypes(latestData);
-        const hasExplicitChannelData = !!(
-          getChannelStateMap(latestData)
-          || latestData?.channelsMap
-          || latestData?.channelTypes
-          || latestData?.connectedChannels
-          || latestData?.reservedAgentChannelIds
-        );
-
-        if (!hasExplicitChannelData && channelType.length === 1 && channelType[0] === 'telephony') {
-          addSDKLog('warn', 'No provisioned channel data found in latestData; inferring telephony channel for stateChangeV2', {
-            latestDataKeys: latestData ? Object.keys(latestData) : [],
-          }, 'WebexContext');
-        }
-
-        const syncLatestAgentState = () => {
-          const refreshedLatestData = agentStateInfo?.latestData;
-          if (refreshedLatestData) {
-            syncAgentStateFromSdkData(refreshedLatestData, 'post stateChange request latestData');
-          }
-        };
-
-        if (state === 'Idle') {
-          // Idle REQUIRES a valid UUID auxCodeId
-          if (!idleCodeId || !isValidUUID(idleCodeId)) {
-            const errorMsg = `Cannot change to Idle state: invalid or missing idle code ID. Received: "${idleCodeId}". Ensure idle codes are loaded.`;
-            addSDKLog('error', errorMsg, { idleCodeId, idleCodesLoaded: idleCodes.length }, 'WebexContext');
-            console.error('[WebexCC]', errorMsg);
-            return;
-          }
-
-          if (hasV2) {
-            const payload = { channelType, state: 'Idle' as const, auxCodeId: idleCodeId };
-            lastStateChangePayloadRef.current = payload;
-            await agentStateInfo.stateChangeV2(payload);
-            addSDKLog('info', `stateChangeV2 request sent`, payload, 'WebexContext');
-            syncLatestAgentState();
-          } else {
-            addSDKLog('warn', 'stateChangeV2 unavailable, falling back to legacy stateChange', null, 'WebexContext');
-            const request = { state: 'Idle' as const, auxCodeIdArray: idleCodeId };
-            lastStateChangePayloadRef.current = request;
-            await agentStateInfo.stateChange(request);
-            addSDKLog('info', `Legacy stateChange sent: Idle with code ${idleCodeId}`, request, 'WebexContext');
-            syncLatestAgentState();
-          }
-        } else if (state === 'Available') {
-          if (hasV2) {
-            const payload = { channelType, state: 'Available' as const };
-            lastStateChangePayloadRef.current = payload;
-            await agentStateInfo.stateChangeV2(payload);
-            addSDKLog('info', `stateChangeV2 request sent`, payload, 'WebexContext');
-            syncLatestAgentState();
-          } else {
-            addSDKLog('warn', 'stateChangeV2 unavailable, falling back to legacy stateChange', null, 'WebexContext');
-            // Legacy path: pass sentinel "0" (empty string is rejected with reasonCode 33)
-            const request = { state: 'Available' as const, auxCodeIdArray: '0' };
-            lastStateChangePayloadRef.current = request;
-            await agentStateInfo.stateChange(request);
-            addSDKLog('info', `Legacy stateChange sent: Available`, request, 'WebexContext');
-            syncLatestAgentState();
-          }
-        } else {
-          addSDKLog('warn', `State ${state} not directly settable via stateChange API`, null, 'WebexContext');
-          console.warn(`[WebexCC] State ${state} may require different SDK call`);
-        }
-        // State will be updated via the 'updated' event listener
-      } else {
-        // Demo mode - update local state directly
-        const idleCode = idleCodeId ? idleCodes.find(c => c.id === idleCodeId) : undefined;
-        setAgentStateInfo({
-          state,
-          idleCode,
-          lastStateChangeTime: Date.now(),
-        });
-      }
-      console.log('[WebexCC] State change requested:', state, idleCodeId);
-    } catch (error) {
-      addSDKLog('error', `State change failed:`, {
-        error,
-        lastRequestPayload: lastStateChangePayloadRef.current,
-        latestDataSnapshot: desktopRef.current?.agentStateInfo?.latestData,
-      }, 'WebexContext');
-      console.error('[WebexCC] State change failed:', error);
-      // Don't update local state on error - let SDK events drive state
+    if (runningInDemoMode || !desktopRef.current) {
+      // Demo mode - update local state directly
+      const idleCode = idleCodeId ? idleCodes.find(c => c.id === idleCodeId) : undefined;
+      setAgentStateInfo({
+        state,
+        idleCode,
+        lastStateChangeTime: Date.now(),
+      });
+      return;
     }
-  }, [runningInDemoMode, idleCodes, addSDKLog, getProvisionedChannelTypes, getChannelStateMap, isValidUUID, syncAgentStateFromSdkData]);
+
+    console.log('[WebexCC] Setting agent state via SDK:', state, idleCodeId);
+    addSDKLog('info', `Requesting state change: ${state}`, { idleCodeId }, 'WebexContext');
+
+    const agentStateInfo = desktopRef.current.agentStateInfo;
+    const hasV2 = typeof agentStateInfo?.stateChangeV2 === 'function';
+    const latestData = agentStateInfo?.latestData;
+    const channelType = getProvisionedChannelTypes(latestData);
+
+    // Idle requires a valid UUID auxCodeId
+    if (state === 'Idle' && (!idleCodeId || !isValidUUID(idleCodeId))) {
+      addSDKLog('error',
+        `Cannot change to Idle state: invalid or missing idle code ID. Received: "${idleCodeId}".`,
+        { idleCodeId, idleCodesLoaded: idleCodes.length },
+        'WebexContext');
+      return;
+    }
+    if (state !== 'Available' && state !== 'Idle') {
+      addSDKLog('warn', `State ${state} not directly settable via stateChange API`, null, 'WebexContext');
+      return;
+    }
+
+    // Build payload
+    let payload: any;
+    let sdkMethod: 'stateChangeV2' | 'stateChange';
+    if (hasV2) {
+      sdkMethod = 'stateChangeV2';
+      payload = state === 'Idle'
+        ? { channelType, state: 'Idle' as const, auxCodeId: idleCodeId }
+        : { channelType, state: 'Available' as const };
+    } else {
+      sdkMethod = 'stateChange';
+      payload = state === 'Idle'
+        ? { state: 'Idle' as const, auxCodeIdArray: idleCodeId! }
+        : { state: 'Available' as const, auxCodeIdArray: '0' };
+    }
+    lastStateChangePayloadRef.current = payload;
+
+    // Detect AQM notification timeout: Cisco accepts the PUT (202) but the
+    // AgentChannelStateChanged notification over the AQM WebSocket is delayed
+    // or not delivered. The state DID change on Cisco's side, so we must not
+    // block the UI.
+    const isAqmTimeout = (err: any): boolean => {
+      const id = err?.id || err?.details?.id;
+      const status = err?.details?.resAxios?.status ?? err?.resAxios?.status;
+      return id === 'Service.aqm.reqs.Timeout' || status === 202;
+    };
+
+    let requestAccepted = false;
+    try {
+      await agentStateInfo[sdkMethod](payload);
+      requestAccepted = true;
+      addSDKLog('info', `${sdkMethod} resolved`, { payload }, 'WebexContext');
+    } catch (error: any) {
+      if (isAqmTimeout(error)) {
+        requestAccepted = true;
+        addSDKLog('warn',
+          `${sdkMethod} AQM notification timed out (HTTP 202 accepted). Cisco applied the state change; syncing via poll.`,
+          { payload, error },
+          'WebexContext');
+      } else {
+        addSDKLog('error', `State change failed:`, {
+          error,
+          sdkMethod,
+          lastRequestPayload: payload,
+          latestDataSnapshot: agentStateInfo?.latestData,
+        }, 'WebexContext');
+        console.error('[WebexCC] State change failed:', error);
+        return;
+      }
+    }
+
+    if (!requestAccepted) return;
+
+    // Optimistic UI update — poll/events will overwrite if Cisco reports different.
+    const optimisticIdleCode = state === 'Idle' && idleCodeId
+      ? { id: idleCodeId, name: (idleCodesRef.current.find(c => c.id === idleCodeId)?.name) || '' }
+      : undefined;
+    setAgentStateInfo({
+      state,
+      idleCode: optimisticIdleCode,
+      lastStateChangeTime: Date.now(),
+    });
+
+    // Poll latestData for up to ~10s to confirm state change and drive full sync.
+    const desiredSubStatus = state === 'Available' ? 'available' : 'idle';
+    const pollStart = Date.now();
+    const pollDeadline = pollStart + 10_000;
+    const pollInterval = 500;
+
+    const pollForConfirmation = async () => {
+      while (Date.now() < pollDeadline) {
+        await new Promise(r => setTimeout(r, pollInterval));
+        const current = agentStateInfo?.latestData;
+        const currentSubStatus = (current?.subStatus || '').toLowerCase();
+        const currentAuxCode = current?.idleCode?.id;
+
+        const stateMatches = currentSubStatus === desiredSubStatus;
+        const auxMatches = state === 'Available' || currentAuxCode === idleCodeId;
+
+        if (stateMatches && auxMatches) {
+          syncAgentStateFromSdkData(current, `poll after ${sdkMethod}`);
+          addSDKLog('info', `State change confirmed via poll after ${Date.now() - pollStart}ms`,
+            { state, subStatus: currentSubStatus, auxCode: currentAuxCode }, 'WebexContext');
+          return;
+        }
+      }
+      addSDKLog('warn',
+        `State change poll timed out after ${Date.now() - pollStart}ms; relying on SDK events.`,
+        { requestedState: state, latestSubStatus: agentStateInfo?.latestData?.subStatus },
+        'WebexContext');
+    };
+
+    // Fire and forget — the SDK 'updated' / 'eAgentChannelStateChanged' listeners
+    // will also drive sync if they arrive first.
+    pollForConfirmation();
+  }, [runningInDemoMode, idleCodes, addSDKLog, getProvisionedChannelTypes, isValidUUID, syncAgentStateFromSdkData]);
+
+
 
   // Accept incoming task
   const acceptTask = useCallback(async (taskId: string) => {
