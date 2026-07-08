@@ -89,12 +89,15 @@ interface WebexContextType {
   transferToQueue: (taskId: string, queueId: string) => Promise<void>;
   transferToAgent: (taskId: string, agentId: string) => Promise<void>;
   transferToDN: (taskId: string, dialNumber: string) => Promise<void>;
+  transferToEntryPoint: (taskId: string, entryPointId: string) => Promise<void>;
   consultAgent: (taskId: string, agentId: string) => Promise<void>;
   consultQueue: (taskId: string, queueId: string) => Promise<void>;
   consultDN: (taskId: string, dialNumber: string) => Promise<void>;
+  consultEntryPoint: (taskId: string, entryPointId: string) => Promise<void>;
   completeTransfer: (taskId: string) => Promise<void>;
   cancelConsult: (taskId: string) => Promise<void>;
   conferenceCall: (taskId: string) => Promise<void>;
+  exitConference: (taskId: string) => Promise<void>;
   outdial: (dialNumber: string, entryPointId: string) => Promise<void>;
   startRecording: (taskId: string) => Promise<void>;
   stopRecording: (taskId: string) => Promise<void>;

@@ -176,10 +176,10 @@ export interface RecentOutboundCall {
 export interface ConsultState {
   isConsulting: boolean;
   consultTarget?: {
-    type: 'agent' | 'queue' | 'dn';
+    type: 'agent' | 'queue' | 'dn' | 'entryPoint';
     id: string;
     name: string;
-    destinationType?: 'agent' | 'queue' | 'dialNumber';
+    destinationType?: 'agent' | 'queue' | 'dialNumber' | 'entryPoint';
   };
   consultStartTime?: number;
   consultConnected?: boolean;
