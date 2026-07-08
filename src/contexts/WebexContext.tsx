@@ -1292,8 +1292,71 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
           } catch (e) {
             addSDKLog('warn', 'Could not register eOutdialFailed listener', { error: e instanceof Error ? e.message : String(e) }, 'WebexContext');
           }
-          
+
+          // ---- Campaign / preview outdial events ----
+          const extractCampaignContact = (event: any): CampaignContact => {
+            const raw = event?.data?.interaction ?? event?.interaction ?? event?.data ?? event ?? {};
+            const cad = raw.callAssociatedData || {};
+            const cd = raw.callAssociatedDetails || {};
+            return {
+              interactionId: raw.interactionId || event?.interactionId || `campaign-${Date.now()}`,
+              campaignId: raw.campaignId || raw.outboundCampaignId,
+              campaignName: raw.campaignName || cad.CampaignName?.value,
+              customerName: cad.G_Customer_Name?.value || cad.L_Caller_Name?.value,
+              phoneNumber: cd.ani || raw.dn || raw.phoneNumber,
+              previewDeadline:
+                typeof raw.previewTimeout === 'number'
+                  ? Date.now() + raw.previewTimeout * 1000
+                  : undefined,
+              raw: event,
+            };
+          };
+
+          try {
+            registerSafe('eAgentOfferCampaignReserved', (event: any) => {
+              addSDKLog('info', '>>> eAgentOfferCampaignReserved <<<', event, 'Campaign');
+              const c = extractCampaignContact(event);
+              setCampaignContacts((prev) => [...prev.filter((p) => p.interactionId !== c.interactionId), c]);
+              desktopNotify({
+                title: `Campaign reservation${c.campaignName ? ` · ${c.campaignName}` : ''}`,
+                data: c.customerName || c.phoneNumber || '',
+                type: 'info',
+              });
+            });
+            registerSafe('eAgentAddCampaignReserved', (event: any) => {
+              addSDKLog('info', '>>> eAgentAddCampaignReserved <<<', event, 'Campaign');
+              const c = extractCampaignContact(event);
+              setCampaignContacts((prev) => [...prev.filter((p) => p.interactionId !== c.interactionId), c]);
+            });
+            registerSafe('eAgentCampaignContactUpdated', (event: any) => {
+              addSDKLog('info', '>>> eAgentCampaignContactUpdated <<<', event, 'Campaign');
+              const c = extractCampaignContact(event);
+              setCampaignContacts((prev) => prev.map((p) => (p.interactionId === c.interactionId ? { ...p, ...c } : p)));
+            });
+          } catch (e) {
+            addSDKLog('warn', 'Could not register campaign contact listeners', { error: e instanceof Error ? e.message : String(e) }, 'WebexContext');
+          }
+
+          try {
+            if (desktopRef.current.dialer?.addEventListener) {
+              desktopRef.current.dialer.addEventListener('eCampaignPreviewAcceptFailed', (event: any) => {
+                addSDKLog('error', '>>> eCampaignPreviewAcceptFailed <<<', event, 'Campaign');
+                toast({ title: 'Campaign accept failed', description: event?.data?.reason || 'Unknown error', variant: 'destructive' });
+              });
+              desktopRef.current.dialer.addEventListener('eCampaignPreviewSkipFailed', (event: any) => {
+                addSDKLog('error', '>>> eCampaignPreviewSkipFailed <<<', event, 'Campaign');
+              });
+              desktopRef.current.dialer.addEventListener?.('eCampaignPreviewRemoveFailed', (event: any) => {
+                addSDKLog('error', '>>> eCampaignPreviewRemoveFailed <<<', event, 'Campaign');
+              });
+              addSDKLog('info', 'Registered: campaign dialer failure listeners', null, 'WebexContext');
+            }
+          } catch (e) {
+            addSDKLog('warn', 'Could not register campaign dialer listeners', { error: e instanceof Error ? e.message : String(e) }, 'WebexContext');
+          }
+
           addSDKLog('info', 'SDK initialization complete - all event listeners registered', null, 'WebexContext');
+
           
           // Hydrate current interactions from TaskMap
           try {
