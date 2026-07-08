@@ -2150,11 +2150,23 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     const pollInterval = 500;
 
     const pollForConfirmation = async () => {
+      let lastLoggedSubStatus: string | null = null;
       while (Date.now() < pollDeadline) {
         await new Promise(r => setTimeout(r, pollInterval));
-        const current = agentStateInfo?.latestData;
+        // Re-read the SDK object fresh every iteration — never trust
+        // a captured reference from the top of setAgentState().
+        const current = desktopRef.current?.agentStateInfo?.latestData;
         const currentSubStatus = (current?.subStatus || '').toLowerCase();
         const currentAuxCode = current?.idleCode?.id;
+
+        if (currentSubStatus !== lastLoggedSubStatus) {
+          addSDKLog('debug', 'State-change poll observed subStatus', {
+            elapsedMs: Date.now() - pollStart,
+            subStatus: current?.subStatus,
+            auxCodeId: currentAuxCode,
+          }, 'WebexContext');
+          lastLoggedSubStatus = currentSubStatus;
+        }
 
         const stateMatches = currentSubStatus === desiredSubStatus;
         const auxMatches = state === 'Available' || currentAuxCode === idleCodeId;
@@ -2166,11 +2178,18 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
           return;
         }
       }
+      // Deadline: sync from whatever Cisco reports so the UI reflects reality
+      // instead of leaving the widget on the optimistic value forever.
+      const finalData = desktopRef.current?.agentStateInfo?.latestData;
+      if (finalData) {
+        syncAgentStateFromSdkData(finalData, 'poll deadline fallback');
+      }
       addSDKLog('warn',
-        `State change poll timed out after ${Date.now() - pollStart}ms; relying on SDK events.`,
-        { requestedState: state, latestSubStatus: agentStateInfo?.latestData?.subStatus },
+        `State change poll timed out after ${Date.now() - pollStart}ms; synced from latest SDK data.`,
+        { requestedState: state, latestSubStatus: finalData?.subStatus },
         'WebexContext');
     };
+
 
     // Fire and forget — the SDK 'updated' / 'eAgentChannelStateChanged' listeners
     // will also drive sync if they arrive first.
