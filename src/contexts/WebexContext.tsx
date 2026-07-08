@@ -250,6 +250,10 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   // Demo control state
   const [demoAutoIncomingEnabled, setDemoAutoIncomingEnabled] = useState(true);
 
+  // Screen pop
+  const [screenPop, setScreenPop] = useState<ScreenPopEvent | null>(null);
+  const dismissScreenPop = useCallback(() => setScreenPop(null), []);
+
   // SDK Debug Logs state
   const [sdkLogs, setSdkLogs] = useState<SDKLogEntry[]>([]);
   const logIdCounter = useRef(0);
