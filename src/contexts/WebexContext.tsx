@@ -304,6 +304,9 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
   const activeTasksRef = useRef<Task[]>([]);
   const incomingTaskRef = useRef<IncomingTask | null>(null);
   const agentStateRef = useRef<AgentStateInfo | null>(null);
+  // Late-bound ref to the hydrator, populated once it's defined below. Lets
+  // callbacks declared earlier in the module invoke it without TDZ issues.
+  const hydrateActiveTaskRef = useRef<((interactionId: string | undefined, reason: string) => Promise<boolean>) | null>(null);
 
   // SDK Logging helper
   const addSDKLog = useCallback((level: SDKLogLevel, message: string, data?: unknown, source?: string) => {
