@@ -23,6 +23,7 @@ import type {
 import type { SDKLogEntry, SDKLogLevel } from '@/types/sdk-debug';
 import { getScenarioById } from '@/lib/demoScenarios';
 import { isDemoMode, getEnvironmentDiagnostics } from '@/lib/webexEnvironment';
+import { toast } from '@/hooks/use-toast';
 interface WebexContextType {
   // Connection state
   isInitialized: boolean;
