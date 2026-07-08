@@ -1019,36 +1019,29 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
             addSDKLog('info', 'Registered: eAgentChannelReloginSuccess listener', null, 'WebexContext');
           }
           
-          // Fetch idle codes from the SDK
+          // Fetch idle + wrap-up codes (paginated via agentConfigJsApi when available)
           try {
-            addSDKLog('info', 'Fetching idle codes...', null, 'WebexContext');
-            const sdkIdleCodes = await desktopRef.current.actions.getIdleCodes();
-            if (sdkIdleCodes && Array.isArray(sdkIdleCodes)) {
-              setIdleCodes(sdkIdleCodes.map((code: any) => ({
-                id: code.id,
-                name: code.name,
-              })));
-              addSDKLog('info', `Loaded ${sdkIdleCodes.length} idle codes`, null, 'WebexContext');
+            addSDKLog('info', 'Fetching idle codes (paginated)...', null, 'WebexContext');
+            const idlePage = await fetchAuxCodes({ workType: 'IDLE_CODE', page: 0, pageSize: 100 });
+            if (idlePage.codes.length > 0) {
+              setIdleCodes(idlePage.codes);
+              setIdleCodesHasMore(idlePage.hasMore);
+              addSDKLog('info', `Loaded ${idlePage.codes.length}/${idlePage.totalRecords || idlePage.codes.length} idle codes`, null, 'WebexContext');
             }
           } catch (e) {
             addSDKLog('warn', 'Could not fetch idle codes', e, 'WebexContext');
-            console.warn('[WebexCC] Could not fetch idle codes:', e);
           }
-          
-          // Fetch wrap-up codes from the SDK
+
           try {
-            addSDKLog('info', 'Fetching wrap-up codes...', null, 'WebexContext');
-            const sdkWrapUpCodes = await desktopRef.current.actions.getWrapUpCodes();
-            if (sdkWrapUpCodes && Array.isArray(sdkWrapUpCodes)) {
-              setWrapUpCodes(sdkWrapUpCodes.map((code: any) => ({
-                id: code.id,
-                name: code.name,
-              })));
-              addSDKLog('info', `Loaded ${sdkWrapUpCodes.length} wrap-up codes`, null, 'WebexContext');
+            addSDKLog('info', 'Fetching wrap-up codes (paginated)...', null, 'WebexContext');
+            const wrapPage = await fetchAuxCodes({ workType: 'WRAP_UP_CODE', page: 0, pageSize: 100 });
+            if (wrapPage.codes.length > 0) {
+              setWrapUpCodes(wrapPage.codes);
+              setWrapUpCodesHasMore(wrapPage.hasMore);
+              addSDKLog('info', `Loaded ${wrapPage.codes.length}/${wrapPage.totalRecords || wrapPage.codes.length} wrap-up codes`, null, 'WebexContext');
             }
           } catch (e) {
             addSDKLog('warn', 'Could not fetch wrap-up codes', e, 'WebexContext');
-            console.warn('[WebexCC] Could not fetch wrap-up codes:', e);
           }
           
           // Register event listeners for real-time updates
