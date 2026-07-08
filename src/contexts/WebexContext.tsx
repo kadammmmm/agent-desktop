@@ -2081,6 +2081,111 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
     }
   }, [runningInDemoMode, addSDKLog]);
 
+  // ---- Paginated aux-code search (idle + wrap-up) ----
+  const searchIdleCodes = useCallback(async (query: string) => {
+    try {
+      const page = await fetchAuxCodes({ workType: 'IDLE_CODE', page: 0, pageSize: 100, search: query });
+      setIdleCodes(page.codes);
+      setIdleCodesHasMore(page.hasMore);
+      addSDKLog('debug', 'searchIdleCodes', { query, count: page.codes.length }, 'AuxCodes');
+    } catch (e) {
+      addSDKLog('warn', 'searchIdleCodes failed', { error: e instanceof Error ? e.message : String(e) }, 'AuxCodes');
+    }
+  }, [addSDKLog]);
+
+  const searchWrapUpCodes = useCallback(async (query: string) => {
+    try {
+      const page = await fetchAuxCodes({ workType: 'WRAP_UP_CODE', page: 0, pageSize: 100, search: query });
+      setWrapUpCodes(page.codes);
+      setWrapUpCodesHasMore(page.hasMore);
+      addSDKLog('debug', 'searchWrapUpCodes', { query, count: page.codes.length }, 'AuxCodes');
+    } catch (e) {
+      addSDKLog('warn', 'searchWrapUpCodes failed', { error: e instanceof Error ? e.message : String(e) }, 'AuxCodes');
+    }
+  }, [addSDKLog]);
+
+  // ---- V2 agentContact helper: prefer *V2 methods when available ----
+  const callAgentContact = useCallback((baseMethod: string, payload: any) => {
+    const ac: any = desktopRef.current?.agentContact;
+    if (!ac) throw new Error('agentContact SDK not available');
+    const v2Name = `${baseMethod}V2`;
+    if (typeof ac[v2Name] === 'function') {
+      return ac[v2Name](payload);
+    }
+    if (typeof ac[baseMethod] === 'function') {
+      addSDKLog('debug', `Using V1 fallback for ${baseMethod}`, null, 'V2');
+      return ac[baseMethod](payload);
+    }
+    throw new Error(`agentContact.${baseMethod} not available`);
+  }, [addSDKLog]);
+
+  // ---- Drop a specific participant from a conference (V2 only) ----
+  const dropConferenceParticipant = useCallback(async (taskId: string, participantId: string) => {
+    if (runningInDemoMode || !desktopRef.current?.agentContact?.dropConferenceParticipant) {
+      addSDKLog('warn', 'dropConferenceParticipant not available', { runningInDemoMode }, 'Conference');
+      return;
+    }
+    try {
+      await desktopRef.current.agentContact.dropConferenceParticipant({
+        interactionId: taskId,
+        data: { participantId },
+      });
+      addSDKLog('info', 'dropConferenceParticipant success', { taskId, participantId }, 'Conference');
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      addSDKLog('error', 'dropConferenceParticipant failed', { error: msg }, 'Conference');
+      toast({ title: 'Could not remove participant', description: msg, variant: 'destructive' });
+    }
+  }, [runningInDemoMode, addSDKLog]);
+
+  // ---- Campaign accept / skip / remove ----
+  const acceptCampaignContact = useCallback(async (interactionId: string) => {
+    const c = campaignContacts.find((x) => x.interactionId === interactionId);
+    try {
+      if (!runningInDemoMode && desktopRef.current?.dialer?.previewCampaignAccept) {
+        await desktopRef.current.dialer.previewCampaignAccept({
+          data: { interactionId, campaignId: c?.campaignId },
+        });
+      }
+      setCampaignContacts((prev) => prev.filter((p) => p.interactionId !== interactionId));
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      addSDKLog('error', 'acceptCampaignContact failed', { error: msg }, 'Campaign');
+      toast({ title: 'Accept failed', description: msg, variant: 'destructive' });
+    }
+  }, [campaignContacts, runningInDemoMode, addSDKLog]);
+
+  const skipCampaignContact = useCallback(async (interactionId: string) => {
+    const c = campaignContacts.find((x) => x.interactionId === interactionId);
+    try {
+      if (!runningInDemoMode && desktopRef.current?.dialer?.previewCampaignSkip) {
+        await desktopRef.current.dialer.previewCampaignSkip({
+          data: { interactionId, campaignId: c?.campaignId },
+        });
+      }
+      setCampaignContacts((prev) => prev.filter((p) => p.interactionId !== interactionId));
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      addSDKLog('error', 'skipCampaignContact failed', { error: msg }, 'Campaign');
+      toast({ title: 'Skip failed', description: msg, variant: 'destructive' });
+    }
+  }, [campaignContacts, runningInDemoMode, addSDKLog]);
+
+  const removeCampaignContact = useCallback(async (interactionId: string) => {
+    const c = campaignContacts.find((x) => x.interactionId === interactionId);
+    try {
+      if (!runningInDemoMode && desktopRef.current?.dialer?.removePreviewContact) {
+        await desktopRef.current.dialer.removePreviewContact({
+          data: { interactionId, campaignId: c?.campaignId },
+        });
+      }
+      setCampaignContacts((prev) => prev.filter((p) => p.interactionId !== interactionId));
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      addSDKLog('error', 'removeCampaignContact failed', { error: msg }, 'Campaign');
+    }
+  }, [campaignContacts, runningInDemoMode, addSDKLog]);
+
   // End task
   const endTask = useCallback(async (taskId: string) => {
     try {
