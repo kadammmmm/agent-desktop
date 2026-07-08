@@ -2139,26 +2139,51 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
 
   // ---- Paginated aux-code search (idle + wrap-up) ----
   const searchIdleCodes = useCallback(async (query: string) => {
+    const q = query?.trim() || '';
+    // Empty query: don't hit paginated API — refresh from latestData if available,
+    // otherwise leave existing state intact.
+    if (!q) {
+      const latest = desktopRef.current?.agentStateInfo?.latestData?.idleCodes;
+      if (Array.isArray(latest) && latest.length > 0) {
+        setIdleCodes(latest.map((c: any) => ({ id: c.id, name: c.name })));
+        setIdleCodesHasMore(false);
+      }
+      return;
+    }
     try {
-      const page = await fetchAuxCodes({ workType: 'IDLE_CODE', page: 0, pageSize: 100, search: query });
-      setIdleCodes(page.codes);
-      setIdleCodesHasMore(page.hasMore);
-      addSDKLog('debug', 'searchIdleCodes', { query, count: page.codes.length }, 'AuxCodes');
+      const page = await fetchAuxCodes({ workType: 'IDLE_CODE', page: 0, pageSize: 100, search: q });
+      if (page.codes.length > 0) {
+        setIdleCodes(page.codes);
+        setIdleCodesHasMore(page.hasMore);
+      }
+      addSDKLog('debug', 'searchIdleCodes', { query: q, count: page.codes.length }, 'AuxCodes');
     } catch (e) {
       addSDKLog('warn', 'searchIdleCodes failed', { error: e instanceof Error ? e.message : String(e) }, 'AuxCodes');
     }
   }, [addSDKLog]);
 
   const searchWrapUpCodes = useCallback(async (query: string) => {
+    const q = query?.trim() || '';
+    if (!q) {
+      const latest = desktopRef.current?.agentStateInfo?.latestData?.wrapupCodes;
+      if (Array.isArray(latest) && latest.length > 0) {
+        setWrapUpCodes(latest.map((c: any) => ({ id: c.id, name: c.name })));
+        setWrapUpCodesHasMore(false);
+      }
+      return;
+    }
     try {
-      const page = await fetchAuxCodes({ workType: 'WRAP_UP_CODE', page: 0, pageSize: 100, search: query });
-      setWrapUpCodes(page.codes);
-      setWrapUpCodesHasMore(page.hasMore);
-      addSDKLog('debug', 'searchWrapUpCodes', { query, count: page.codes.length }, 'AuxCodes');
+      const page = await fetchAuxCodes({ workType: 'WRAP_UP_CODE', page: 0, pageSize: 100, search: q });
+      if (page.codes.length > 0) {
+        setWrapUpCodes(page.codes);
+        setWrapUpCodesHasMore(page.hasMore);
+      }
+      addSDKLog('debug', 'searchWrapUpCodes', { query: q, count: page.codes.length }, 'AuxCodes');
     } catch (e) {
       addSDKLog('warn', 'searchWrapUpCodes failed', { error: e instanceof Error ? e.message : String(e) }, 'AuxCodes');
     }
   }, [addSDKLog]);
+
 
   // ---- V2 agentContact helper: prefer *V2 methods when available ----
   const callAgentContact = useCallback((baseMethod: string, payload: any) => {
