@@ -1031,8 +1031,17 @@ export function WebexProvider({ children }: { children: React.ReactNode }) {
           // Subscribe to agent state changes
           // The 'updated' event passes an array of changed fields, so we re-read latestData
           desktopRef.current.agentStateInfo.addEventListener('updated', (changes: any) => {
-            addSDKLog('debug', 'Agent state updated event received', changes, 'WebexContext');
+            const _snapshot = desktopRef.current?.agentStateInfo?.latestData;
+            addSDKLog('info', '>>> agentStateInfo.updated <<<', {
+              changes,
+              status: _snapshot?.status,
+              subStatus: _snapshot?.subStatus,
+              agentSessionId: _snapshot?.agentSessionId,
+              lastStateChangeReason: _snapshot?.lastStateChangeReason,
+              hasChannelsMap: !!_snapshot?.channelsMap,
+            }, 'WebexContext');
             console.log('[WebexCC] Agent state update event:', changes);
+
             
             // Re-read the full latestData to get complete state and sync config
             const latestData = desktopRef.current?.agentStateInfo?.latestData;
